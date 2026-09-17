@@ -1,0 +1,42 @@
+name: Hausie AI
+slug: hausie_ai
+version: "0.1.0"
+description: Local-first contextual learning for Hausie smart homes
+arch:
+  - aarch64
+  - armhf
+  - amd64
+startup: services
+boot: auto
+homeassistant_api: true
+hassio_api: false
+host_network: false
+ingress: true
+ingress_port: 8099
+ingress_entry: /
+panel_title: Hausie AI
+panel_icon: mdi:brain
+map:
+  - type: addon_config
+    read_only: false
+options:
+  cloud_url: ""
+  cloud_token: ""
+  device_id: ""
+  poll_interval_seconds: 30
+  auto_act: false
+  dry_run: true
+  min_observations: 3
+  min_confidence: 0.8
+  learn_from_unknown: false
+schema:
+  cloud_url: str
+  cloud_token: password
+  device_id: str
+  poll_interval_seconds: int(10,3600)
+  auto_act: bool
+  dry_run: bool
+  min_observations: int(1,100)
+  min_confidence: float(0,1)
+  learn_from_unknown: bool
+
