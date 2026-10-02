@@ -58,6 +58,26 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Hausie AI Local", version=ADDON_VERSION, lifespan=lifespan)
+LOGGER = logging.getLogger(__name__)
+
+
+@app.middleware("http")
+async def normalize_ingress_entry(request: Request, call_next):
+    """Match the tolerant entrypoint handling used by the Hausie app server."""
+    original_path = request.scope["path"]
+    ingress_path = request.headers.get("X-Ingress-Path", "").rstrip("/")
+    forwarded_path = original_path
+    if re.fullmatch(r"/api/hassio_ingress/[A-Za-z0-9_-]+", ingress_path):
+        if original_path == ingress_path or original_path.startswith(f"{ingress_path}/"):
+            forwarded_path = original_path[len(ingress_path):] or "/"
+            request.scope["path"] = forwarded_path
+    normalized_path = forwarded_path.rstrip("/")
+    if request.method == "GET" and normalized_path in {"", "/ui"}:
+        request.scope["path"] = normalized_path or "/"
+    response = await call_next(request)
+    if response.status_code == 404 and ingress_path:
+        LOGGER.warning("INGRESS_NOT_FOUND method=%s path=%s", request.method, forwarded_path)
+    return response
 
 
 @app.get("/health")

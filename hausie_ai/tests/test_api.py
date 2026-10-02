@@ -51,5 +51,14 @@ def test_ingress_panel_uses_supervisor_base_path(tmp_path: Path):
         assert "<base href='/api/hassio_ingress/example-token/'>" in response.text
         assert "fetch('api/v1/status')" in response.text
         assert client.get("/ui/").status_code == 200
+        assert client.get("/ui//").status_code == 200
+        assert client.get(
+            "/api/hassio_ingress/example-token/ui",
+            headers={"X-Ingress-Path": "/api/hassio_ingress/example-token"},
+        ).status_code == 200
+        assert client.get(
+            "/api/hassio_ingress/example-token/api/v1/status",
+            headers={"X-Ingress-Path": "/api/hassio_ingress/example-token"},
+        ).status_code == 200
         assert client.get("/").status_code == 200
 

@@ -1,6 +1,6 @@
 name: Hausie AI
 slug: hausie_ai
-version: "0.3.1"
+version: "0.3.2"
 description: Local-first contextual learning for Hausie smart homes
 url: https://github.com/Hausie-au/hausie-ai-local
 arch:

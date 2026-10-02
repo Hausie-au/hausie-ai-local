@@ -142,9 +142,10 @@ This repository is a standalone custom app repository. In Home Assistant:
    panel uses Home Assistant Ingress and has no separate network port to open.
 
 If the panel shows `{"detail":"Not Found"}`, refresh the App Store repository,
-update Hausie AI to version `0.3.1` or newer, and reopen the panel. The app
-entrypoint changed to `/ui` in this version; restarting an older installed
-version alone will not update the entrypoint.
+update Hausie AI to version `0.3.2` or newer, and reopen the panel. The app
+entrypoint is `/ui`, and the server accepts the path forms that Ingress can
+forward. Restarting an older installed version alone will not update the
+entrypoint.
 
 The default configuration is safe for a real home:
 

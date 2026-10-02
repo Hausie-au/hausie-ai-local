@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.2
+
+- Matched the existing Hausie add-on's tolerant Ingress entrypoint handling,
+  including repeated trailing slashes and a forwarded Ingress prefix.
+- Log the requested path when an Ingress request still returns 404.
+
 ## 0.3.1
 
 - Fixed the Home Assistant Ingress entrypoint by serving the panel at `/ui`.

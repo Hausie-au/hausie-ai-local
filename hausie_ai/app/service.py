@@ -15,7 +15,7 @@ from .safety import SafetyPolicy
 from .settings import Settings
 from .storage import Store
 
-ADDON_VERSION = "0.3.1"
+ADDON_VERSION = "0.3.2"
 LOGGER = logging.getLogger(__name__)
 
 
