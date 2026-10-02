@@ -70,7 +70,10 @@ async def normalize_ingress_entry(request: Request, call_next):
     if re.fullmatch(r"/api/hassio_ingress/[A-Za-z0-9_-]+", ingress_path):
         if original_path == ingress_path or original_path.startswith(f"{ingress_path}/"):
             forwarded_path = original_path[len(ingress_path):] or "/"
-            request.scope["path"] = forwarded_path
+    # Older add-on metadata used an absolute ingress_entry ("/ui"). Supervisor
+    # concatenates it after a slash, resulting in //ui at the app server.
+    forwarded_path = "/" + forwarded_path.lstrip("/")
+    request.scope["path"] = forwarded_path
     normalized_path = forwarded_path.rstrip("/")
     if request.method == "GET" and normalized_path in {"", "/ui"}:
         request.scope["path"] = normalized_path or "/"

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3
+
+- Fix Ingress 404 caused by a leading slash in `ingress_entry`, which
+  Supervisor concatenates after its own slash.
+- Accept doubled leading slashes from already-open Ingress URLs.
+
 ## 0.3.2
 
 - Matched the existing Hausie add-on's tolerant Ingress entrypoint handling,
@@ -40,4 +46,3 @@
 - Added Home Assistant state collector, SQLite learner, safety policy and
   ingress API.
 - Added optional aggregate heartbeat to Hausie AI Cloud.
-

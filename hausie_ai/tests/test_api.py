@@ -52,6 +52,9 @@ def test_ingress_panel_uses_supervisor_base_path(tmp_path: Path):
         assert "fetch('api/v1/status')" in response.text
         assert client.get("/ui/").status_code == 200
         assert client.get("/ui//").status_code == 200
+        assert client.get("http://testserver//ui").status_code == 200
+        assert client.get("http://testserver//ui/").status_code == 200
+        assert client.get("http://testserver//api/v1/status").status_code == 200
         assert client.get(
             "/api/hassio_ingress/example-token/ui",
             headers={"X-Ingress-Path": "/api/hassio_ingress/example-token"},
@@ -61,4 +64,10 @@ def test_ingress_panel_uses_supervisor_base_path(tmp_path: Path):
             headers={"X-Ingress-Path": "/api/hassio_ingress/example-token"},
         ).status_code == 200
         assert client.get("/").status_code == 200
+
+
+def test_supervisor_ingress_entry_does_not_create_double_slash():
+    config = (Path(__file__).resolve().parents[1] / "config.yaml").read_text()
+    assert "ingress_entry: ui\n" in config
+    assert "ingress_entry: /ui" not in config
 

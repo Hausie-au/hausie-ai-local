@@ -1,6 +1,6 @@
 name: Hausie AI
 slug: hausie_ai
-version: "0.3.2"
+version: "0.3.3"
 description: Local-first contextual learning for Hausie smart homes
 url: https://github.com/Hausie-au/hausie-ai-local
 arch:
@@ -14,7 +14,7 @@ host_network: false
 init: false
 ingress: true
 ingress_port: 8099
-ingress_entry: /ui
+ingress_entry: ui
 panel_title: Hausie AI
 panel_icon: mdi:brain
 stage: experimental
