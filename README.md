@@ -137,6 +137,14 @@ This repository is a standalone custom app repository. In Home Assistant:
    configuration.
 4. Start it and open the **Log** tab. The first startup creates
    `/data/hausie_ai.sqlite3` automatically.
+5. Open **Hausie AI** from the sidebar or use **Open Web UI** on its app page to
+   inspect the inventory, context, environmental events and decisions. The
+   panel uses Home Assistant Ingress and has no separate network port to open.
+
+If the panel shows `{"detail":"Not Found"}`, refresh the App Store repository,
+update Hausie AI to version `0.3.1` or newer, and reopen the panel. The app
+entrypoint changed to `/ui` in this version; restarting an older installed
+version alone will not update the entrypoint.
 
 The default configuration is safe for a real home:
 

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from html import escape
 import logging
+import re
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -130,9 +132,17 @@ def decision_feedback(decision_id: int, request: DecisionFeedbackRequest) -> dic
 
 
 @app.get("/", response_class=HTMLResponse)
-def index() -> str:
-    return """<!doctype html>
+@app.get("/ui", response_class=HTMLResponse)
+@app.get("/ui/", response_class=HTMLResponse)
+def index(request: Request) -> str:
+    ingress_path = request.headers.get("X-Ingress-Path", "").rstrip("/")
+    if re.fullmatch(r"/api/hassio_ingress/[A-Za-z0-9_-]+", ingress_path):
+        base_href = f"{ingress_path}/"
+    else:
+        base_href = "../" if request.url.path.endswith("/ui/") else "./"
+    html = """<!doctype html>
 <html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+<base href='__BASE_HREF__'>
 <title>Hausie AI</title><style>
 :root{color-scheme:light}body{font:15px system-ui,sans-serif;max-width:1200px;margin:28px auto;padding:0 18px;background:#f6f5ef;color:#173b3f}main{background:#fff;border-radius:18px;padding:26px;box-shadow:0 8px 30px #173b3f18}.top{display:flex;justify-content:space-between;gap:20px;align-items:start}.pill{display:inline-block;padding:6px 10px;border-radius:999px;background:#d8f2ec}.warn{background:#fff0c7}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:12px}.card{background:#f4faf8;padding:14px;border-radius:12px}.num{font-size:25px;font-weight:700}section{margin-top:26px}pre{white-space:pre-wrap;background:#f4f4f0;padding:14px;border-radius:12px;overflow:auto}table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;border-bottom:1px solid #e5e7e6;padding:8px;vertical-align:top}.scroll{overflow:auto}.tag{display:inline-block;background:#e8eeee;padding:2px 6px;border-radius:8px;margin:1px}a{color:#0b7770}
 </style></head><body><main><div class='top'><div><h1>Hausie AI</h1><p>Local inventory, environmental context and explainable learning.</p></div><p id='mode' class='pill'>Loading...</p></div>
@@ -148,6 +158,7 @@ const tags=roles=>(roles||[]).map(role=>`<span class='tag'>${esc(role.replaceAll
 async function load(){try{const [status,inventory,events,decisions]=await Promise.all([fetch('api/v1/status').then(r=>r.json()),fetch('api/v1/inventory').then(r=>r.json()),fetch('api/v1/environment/events?limit=25').then(r=>r.json()),fetch('api/v1/decisions?limit=15').then(r=>r.json())]);document.querySelector('#mode').textContent=`Mode: ${status.mode}`;document.querySelector('#mode').className=`pill ${status.mode==='auto-act'?'warn':''}`;const summary={...inventory.summary,observations:status.stats.observations,environmental_events:status.stats.environmental_events};document.querySelector('#summary').innerHTML=Object.entries(summary).map(([key,value])=>`<div class='card'><div class='num'>${esc(value)}</div><div>${esc(key.replaceAll('_',' '))}</div></div>`).join('');document.querySelector('#context').textContent=JSON.stringify(status.current_context||{status:'Waiting for first snapshot'},null,2);document.querySelector('#inventory').innerHTML=inventory.entities.map(item=>`<tr><td><strong>${esc(item.name)}</strong><br><small>${esc(item.entity_id)}</small></td><td>${esc(item.area_name||'Unassigned')}</td><td>${esc(item.state)} ${esc(item.unit||'')}${item.normalized_value?`<br><small>band: ${esc(item.normalized_value)}</small>`:''}</td><td>${tags(item.roles)}</td><td>${esc(item.safety.reason)}</td></tr>`).join('');document.querySelector('#events').innerHTML=events.map(item=>`<tr><td>${esc(item.created_at)}</td><td>${esc(item.entity_id)}</td><td>${esc(item.area_name||'Unassigned')}</td><td>${esc(item.old_state)} → ${esc(item.new_state)}</td><td>${esc(item.normalized_value||'')}</td></tr>`).join('')||'<tr><td colspan="5">No environmental or occupancy change recorded yet.</td></tr>';document.querySelector('#decisions').innerHTML=decisions.map(item=>`<tr><td>${esc(item.created_at)}</td><td>${esc(item.decision)} (${esc(Number(item.confidence).toFixed(2))})</td><td>${esc(item.action?`${item.action.domain}.${item.action.service} ${item.action.entity_id}`:'')}</td><td>${esc(item.reason)}</td></tr>`).join('')||'<tr><td colspan="4">No decision recorded yet.</td></tr>';}catch(error){document.querySelector('#mode').textContent=`Panel error: ${error}`;}}
 load();setInterval(load,5000);
 </script></body></html>"""
+    return html.replace("__BASE_HREF__", escape(base_href, quote=True))
 
 
 if __name__ == "__main__":

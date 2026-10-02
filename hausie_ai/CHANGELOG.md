@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+
+- Fixed the Home Assistant Ingress entrypoint by serving the panel at `/ui`.
+- Made panel links and API requests resolve through the Ingress base path.
+
 ## 0.3.0
 
 - Added a local Home Assistant inventory built from state, area, device, entity

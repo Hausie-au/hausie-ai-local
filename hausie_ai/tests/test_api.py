@@ -42,3 +42,14 @@ def test_inventory_and_environment_endpoints(tmp_path: Path):
         assert client.get("/api/v1/context").json()["context"]["environment"]
         assert client.get("/api/v1/environment/events").status_code == 200
 
+
+def test_ingress_panel_uses_supervisor_base_path(tmp_path: Path):
+    main.service = HausieAIService(Settings.from_environment().with_data_dir(tmp_path))
+    with TestClient(main.app) as client:
+        response = client.get("/ui", headers={"X-Ingress-Path": "/api/hassio_ingress/example-token"})
+        assert response.status_code == 200
+        assert "<base href='/api/hassio_ingress/example-token/'>" in response.text
+        assert "fetch('api/v1/status')" in response.text
+        assert client.get("/ui/").status_code == 200
+        assert client.get("/").status_code == 200
+
