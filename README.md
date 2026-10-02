@@ -12,7 +12,16 @@ Hausie AI is the local decision layer above it.
 
 - Subscribes to Home Assistant `state_changed` events over the Supervisor API.
 - Resynchronises the full Home Assistant state regularly as a safe fallback.
-- Builds a compact context: weekday, 15-minute time bucket and occupancy.
+- Builds a local inventory from Home Assistant's state, area, device, entity
+  and label registries. This is the same source data that Hausie uses to build
+  its detailed household inventory; it does not require a cloud round trip.
+- Builds context from weekday, a 15-minute time bucket, occupancy and
+  recognised environmental inputs. Temperature, humidity, illuminance,
+  pressure, air-quality and opening sensors are converted into explainable
+  bands such as `comfortable`, `dark`, `elevated` or `open`.
+- Persists environmental and occupancy state changes in local SQLite as they
+  happen. A sensor does not need to wait for the next 15-minute bucket to be
+  recorded.
 - Learns low-risk actions for lights, covers and media players from repeated
   actions made by an identifiable Home Assistant user.
 - Uses a transparent frequency model with minimum-observation and confidence
@@ -22,6 +31,8 @@ Hausie AI is the local decision layer above it.
   app's persistent `/data` volume.
 - Logs every relevant step to the Home Assistant app log so the behaviour is
   visible before any automatic action is enabled.
+- Provides an Ingress panel that shows the current context, the full local
+  inventory, safety classification, environmental history and decisions.
 - Optionally sends an aggregate heartbeat to Hausie AI Cloud. It never sends
   raw states, entity IDs, device names or household timelines to the cloud.
 
@@ -32,7 +43,8 @@ Home Assistant event
         |
         v
 Context before the action
-(weekday, 15-minute bucket, occupancy)
+(weekday, 15-minute bucket, occupancy,
+ environmental bands)
         |
         v
 Explicit user action, for example light.living_room: off -> on
@@ -51,9 +63,41 @@ Frequency learner
 ```
 
 Example: three Tuesday evening user actions that turn on the living-room light
-while the house is occupied create evidence for that action in that context.
-When the same context occurs again, Hausie AI can suggest it. A single event is
-never enough.
+while the house is occupied and the room is `dark` create evidence for that
+action in that context. When the same context occurs again, Hausie AI can
+suggest it. A single event is never enough.
+
+### What the 15-minute bucket means
+
+The 15-minute bucket is a calendar feature, not a sensor polling or recording
+interval. `19:00` through `19:14` are one part of the day; `19:15` through
+`19:29` are the next. It lets a pattern distinguish morning from evening
+without requiring an exact minute match. The real-time event stream records
+environmental changes immediately, while the periodic snapshot is a fallback
+and refreshes the inventory.
+
+### Inventory and environmental inputs
+
+At startup, and then periodically, the app reads the live state snapshot plus
+the Home Assistant area, device, entity and label registries. Each entity is
+displayed in the panel as one or more of the following:
+
+- **Environmental input** — a recognised ambient variable used in the current
+  context.
+- **Context input** — person, tracker, motion, occupancy, presence or opening
+  information used to infer household presence.
+- **Safe action target** — a light, cover or media player that may be proposed
+  after learning enough evidence. It is not automatically controlled by
+  default.
+- **Blocked action target** — for example climate, switch, lock, alarm or
+  camera. It remains visible for transparency, but the safety layer blocks it.
+- **Observed only** — an entity that is currently neither a supported input nor
+  an eligible action target.
+
+Hausie AI intentionally uses normalized bands rather than raw changing values
+in its first learner. For example, `23.8 C` and `24.2 C` both become
+`comfortable`. This prevents a new model context being created for every small
+sensor fluctuation while still making the environmental condition visible.
 
 ## Safety and privacy
 
@@ -112,9 +156,11 @@ The app writes structured messages to standard output, visible in the Home
 Assistant Log tab. It never logs tokens.
 
 ```text
-STARTUP version=0.2.0 mode=observe-and-suggest events=True ...
+STARTUP version=0.3.0 mode=observe-and-suggest events=True ...
 EVENT_STREAM connected subscription=state_changed
-SNAPSHOT entities=214 observations=0
+INVENTORY registry_sync areas=8 devices=74 entities=214 labels=12
+SNAPSHOT entities=214 observations=0 environmental=18 context_inputs=7 safe_targets=21
+ENVIRONMENT event_id=4 entity=sensor.living_room_temperature kind=temperature area=Living Room state=23.8->24.2 band=comfortable used_in_context=True
 EVENT source=user entity=light.living_room state=off->on
 LEARN observation_id=12 source=user action={'domain': 'light', ...}
 DECISION trigger=scheduled decision=SUGGEST_ACTION confidence=1.00 ...
@@ -143,6 +189,12 @@ the configured reversal window, Hausie AI records negative decision feedback.
 The Ingress panel exposes FastAPI documentation at `/docs`. Useful endpoints:
 
 - `GET /api/v1/status` — runtime status and counters.
+- `GET /api/v1/inventory` — all visible entities with areas, labels, roles and
+  safety status.
+- `GET /api/v1/context` — the normalized context currently used for learning.
+- `GET /api/v1/environment/events` — locally persisted ambient and occupancy
+  changes.
+- `GET /api/v1/decisions` — local decision history.
 - `GET /api/v1/observations` — recent local learning observations.
 - `POST /api/v1/observe` — seed a controlled explicit-user observation.
 - `POST /api/v1/decide` — inspect a decision for a supplied context.

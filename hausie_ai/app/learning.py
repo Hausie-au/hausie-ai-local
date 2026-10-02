@@ -9,11 +9,15 @@ from .storage import Store
 
 
 def context_signature(context: dict[str, Any]) -> dict[str, Any]:
-    return {
+    signature = {
         "weekday": int(context.get("weekday", 0)),
         "hour_bucket": int(context.get("hour_bucket", 0)),
         "occupancy": str(context.get("occupancy", "unknown")),
     }
+    environment = context.get("environment")
+    if isinstance(environment, dict):
+        signature["environment"] = {str(key): str(environment[key]) for key in sorted(environment)[:24]}
+    return signature
 
 
 @dataclass(frozen=True)
@@ -27,7 +31,11 @@ class Candidate:
     feedback_average: float
 
 
-def current_context(states: list[dict[str, Any]], now: datetime | None = None) -> dict[str, Any]:
+def current_context(
+    states: list[dict[str, Any]],
+    now: datetime | None = None,
+    profiles: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     now = now or datetime.now().astimezone()
     occupied = False
     for item in states:
@@ -39,11 +47,16 @@ def current_context(states: list[dict[str, Any]], now: datetime | None = None) -
             occupied = True
         if entity_id.startswith("binary_sensor.") and device_class in {"motion", "occupancy", "presence"} and state == "on":
             occupied = True
-    return {
+    context = {
         "weekday": now.weekday(),
         "hour_bucket": now.hour * 4 + now.minute // 15,
         "occupancy": "occupied" if occupied else "unknown",
     }
+    if profiles is not None:
+        from .inventory import environmental_features
+
+        context["environment"] = environmental_features(profiles)
+    return context
 
 
 class Learner:

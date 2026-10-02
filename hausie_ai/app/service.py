@@ -9,12 +9,13 @@ from typing import Any
 from .cloud import CloudClient
 from .events import HomeAssistantEventStream
 from .ha import HomeAssistantClient
+from .inventory import InventoryBuilder
 from .learning import Learner, current_context
 from .safety import SafetyPolicy
 from .settings import Settings
 from .storage import Store
 
-ADDON_VERSION = "0.2.0"
+ADDON_VERSION = "0.3.0"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -84,11 +85,19 @@ class HausieAIService:
         self.store = Store(settings.data_dir)
         self.learner = Learner(self.store, settings.min_observations, settings.min_confidence)
         self.safety = SafetyPolicy()
+        self.inventory_builder = InventoryBuilder(self.safety)
         self.ha = HomeAssistantClient(settings.ha_url, settings.ha_token)
         self.cloud = CloudClient(settings.cloud_url, settings.cloud_token, settings.device_id)
         self.events = HomeAssistantEventStream(settings.ha_url, settings.ha_token)
         self.last_states: list[dict[str, Any]] = []
         self.state_index: dict[str, dict[str, Any]] = {}
+        self.registry_snapshot: dict[str, list[dict[str, Any]]] = {}
+        self.inventory_profiles: list[dict[str, Any]] = self.store.inventory()
+        self.inventory_by_entity: dict[str, dict[str, Any]] = {
+            str(profile["entity_id"]): profile for profile in self.inventory_profiles
+        }
+        self._last_registry_sync = 0.0
+        self.last_inventory_error: str | None = None
         self.last_cloud_error: str | None = None
         self.last_event_at: float | None = None
         self.last_event_source: str | None = None
@@ -125,7 +134,22 @@ class HausieAIService:
         while not self._stop.is_set():
             try:
                 states = await asyncio.to_thread(self.ha.get_states)
-                result = await asyncio.to_thread(self.collect_states, states)
+                registry: dict[str, list[dict[str, Any]]] | None = None
+                if not self.registry_snapshot or monotonic() - self._last_registry_sync > 3600:
+                    try:
+                        registry = await asyncio.to_thread(self.ha.get_inventory_registry)
+                        self.registry_snapshot = registry
+                        self._last_registry_sync = monotonic()
+                        self.last_inventory_error = None
+                        LOGGER.info(
+                            "INVENTORY registry_sync areas=%s devices=%s entities=%s labels=%s",
+                            len(registry.get("areas", [])), len(registry.get("devices", [])),
+                            len(registry.get("entities", [])), len(registry.get("labels", [])),
+                        )
+                    except Exception as exc:
+                        self.last_inventory_error = str(exc)
+                        LOGGER.warning("INVENTORY registry_sync_failed error=%s", exc)
+                result = await asyncio.to_thread(self.collect_states, states, registry)
                 if self.settings.cloud_url and self.settings.device_id:
                     await asyncio.to_thread(self._send_cloud_heartbeat, result["stats"])
                 self._maybe_scheduled_decision()
@@ -144,17 +168,31 @@ class HausieAIService:
         except Exception as exc:
             LOGGER.warning("EVENT_STREAM stopped error=%s", exc)
 
-    def collect_states(self, states: list[dict[str, Any]]) -> dict[str, Any]:
+    def collect_states(
+        self,
+        states: list[dict[str, Any]],
+        registry: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> dict[str, Any]:
         if self.last_states and self.settings.learn_from_unknown:
-            context = current_context(self.last_states)
+            context = self.current_context()
             for action in changed_low_risk_actions(self.last_states, states):
                 observation_id = self.learner.observe(context, action, "unknown")
                 LOGGER.info("LEARN observation_id=%s source=unknown action=%s context=%s", observation_id, action, context)
         self.last_states = states
         self.state_index = {str(state.get("entity_id", "")): state for state in states if state.get("entity_id")}
+        if registry is not None:
+            self.registry_snapshot = registry
+        self.inventory_profiles = self.inventory_builder.build(states, self.registry_snapshot)
+        self.inventory_by_entity = {str(profile["entity_id"]): profile for profile in self.inventory_profiles}
+        self.store.replace_inventory(self.inventory_profiles)
         self.store.add_snapshot(states)
-        LOGGER.info("SNAPSHOT entities=%s observations=%s", len(states), self.store.stats()["observations"])
-        return {"states": len(states), "stats": self.store.stats()}
+        inventory_summary = self.inventory_builder.summary(self.inventory_profiles)
+        LOGGER.info(
+            "SNAPSHOT entities=%s observations=%s environmental=%s context_inputs=%s safe_targets=%s",
+            len(states), self.store.stats()["observations"], inventory_summary["environmental_inputs"],
+            inventory_summary["context_inputs"], inventory_summary["safe_action_targets"],
+        )
+        return {"states": len(states), "stats": self.store.stats(), "inventory": inventory_summary}
 
     def handle_state_changed(self, event: dict[str, Any]) -> None:
         data = event.get("data") or {}
@@ -166,7 +204,7 @@ class HausieAIService:
         if not entity_id:
             return
 
-        context_before = current_context(list(self.state_index.values()))
+        context_before = self.current_context()
         source = self._classify_source(event, new_state)
         action = action_from_state_change(old_state, new_state)
         old_value = str((old_state or {}).get("state", ""))
@@ -181,9 +219,19 @@ class HausieAIService:
 
         self.state_index[entity_id] = new_state
         self.last_states = list(self.state_index.values())
+        profile = self.inventory_builder.build([new_state], self.registry_snapshot)[0]
+        self.inventory_by_entity[entity_id] = profile
+        self.inventory_profiles = sorted(self.inventory_by_entity.values(), key=lambda item: item["entity_id"])
+        if old_value != new_value and (profile["is_environmental"] or profile["is_context_input"]):
+            event_id = self.store.add_environmental_event(profile, old_value, new_value)
+            LOGGER.info(
+                "ENVIRONMENT event_id=%s entity=%s kind=%s area=%s state=%s->%s band=%s used_in_context=%s",
+                event_id, entity_id, profile.get("environmental_kind"), profile.get("area_name") or "unassigned",
+                old_value, new_value, profile.get("normalized_value"), profile["is_environmental"],
+            )
 
-        if self._is_context_trigger(new_state):
-            context_after = current_context(self.last_states)
+        if self._is_context_trigger(profile):
+            context_after = self.current_context()
             result = self.decide(context_after, execute=self.settings.auto_act)
             self._log_decision("context-event", result)
 
@@ -206,20 +254,21 @@ class HausieAIService:
         else:
             LOGGER.info("LEARN skipped source=%s action=%s reason=explicit-user-events-only", source, action)
 
-    def _is_context_trigger(self, state: dict[str, Any]) -> bool:
-        entity_id = str(state.get("entity_id", ""))
-        if entity_id.startswith(("person.", "device_tracker.")):
-            return True
-        attributes = state.get("attributes") or {}
-        device_class = str(attributes.get("device_class", "")).lower()
-        return entity_id.startswith("binary_sensor.") and device_class in {"motion", "occupancy", "presence"}
+    @staticmethod
+    def _is_context_trigger(profile: dict[str, Any]) -> bool:
+        """Presence changes can ask for a decision; environmental changes are persisted.
+
+        A temperature or humidity event should not create a decision on every
+        small update.  The regular decision interval evaluates those features.
+        """
+        return bool(profile.get("is_context_input"))
 
     def _maybe_scheduled_decision(self) -> None:
         now = monotonic()
         if now - self._last_decision_attempt < self.settings.decision_interval_seconds or not self.last_states:
             return
         self._last_decision_attempt = now
-        result = self.decide(current_context(self.last_states), execute=self.settings.auto_act)
+        result = self.decide(self.current_context(), execute=self.settings.auto_act)
         self._log_decision("scheduled", result)
 
     def _action_is_needed(self, action: dict[str, Any]) -> bool:
@@ -272,7 +321,7 @@ class HausieAIService:
                 {
                     "addon_version": ADDON_VERSION,
                     "status": "healthy",
-                    "capabilities": ["event-stream", "state-collector", "local-learner", "safety-policy"],
+                    "capabilities": ["event-stream", "state-collector", "local-inventory", "environment-context", "local-learner", "safety-policy"],
                     "aggregate": stats,
                 }
             )
@@ -349,6 +398,16 @@ class HausieAIService:
             LOGGER.info("FEEDBACK decision_id=%s reward=%s source=%s", decision_id, reward, source)
         return accepted
 
+    def current_context(self) -> dict[str, Any]:
+        return current_context(self.last_states, profiles=self.inventory_profiles)
+
+    def inventory_view(self) -> dict[str, Any]:
+        return {
+            "summary": self.inventory_builder.summary(self.inventory_profiles),
+            "registry_available": bool(self.registry_snapshot),
+            "entities": self.inventory_profiles,
+        }
+
     def status(self) -> dict[str, Any]:
         return {
             "service": "hausie-ai-local",
@@ -357,6 +416,9 @@ class HausieAIService:
             "home_assistant_connected": bool(self.last_states),
             "event_stream_enabled": self.settings.event_stream_enabled,
             "last_event_source": self.last_event_source,
+            "inventory_registry_available": bool(self.registry_snapshot),
+            "last_inventory_error": self.last_inventory_error,
+            "current_context": self.current_context() if self.last_states else None,
             "settings": {
                 "poll_interval_seconds": self.settings.poll_interval_seconds,
                 "decision_interval_seconds": self.settings.decision_interval_seconds,

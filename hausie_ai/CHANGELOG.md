@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0
+
+- Added a local Home Assistant inventory built from state, area, device, entity
+  and label registries already used by Hausie.
+- Added environmental context for recognised temperature, humidity, light,
+  air-quality, pressure and opening sensors, using stable explainable bands.
+- Persisted environmental and occupancy changes in SQLite.
+- Added an Ingress observability panel and local API endpoints that show the
+  inventory, current context, environmental events, safety classification and
+  decisions.
+- Kept `auto_act: false` and `dry_run: true` as the default configuration.
+
 ## 0.2.0
 
 - Added the Home Assistant `state_changed` WebSocket stream with reconnects.

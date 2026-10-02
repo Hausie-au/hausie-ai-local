@@ -31,6 +31,24 @@ class SafetyPolicy:
         "switch",
     }
 
+    def classify_entity(self, entity_id: str) -> dict[str, str]:
+        """Expose the safety posture for the inventory UI without proposing an action."""
+        domain = str(entity_id).split(".", 1)[0]
+        if domain in self.allowed_services:
+            return {
+                "classification": "safe_action_target",
+                "reason": f"{domain} is a low-risk domain in the PoC allow-list.",
+            }
+        if domain in self.blocked_domains:
+            return {
+                "classification": "blocked_action_target",
+                "reason": f"{domain} is intentionally blocked by the PoC safety policy.",
+            }
+        return {
+            "classification": "observed_only",
+            "reason": f"{domain} is not an action domain in the current PoC.",
+        }
+
     def evaluate(self, action: dict[str, Any]) -> SafetyResult:
         domain = str(action.get("domain", "")).strip()
         service = str(action.get("service", "")).strip()

@@ -59,8 +59,90 @@ class Store:
                     source TEXT NOT NULL,
                     FOREIGN KEY(decision_id) REFERENCES decisions(id)
                 );
+                CREATE TABLE IF NOT EXISTS inventory_entities (
+                    entity_id TEXT PRIMARY KEY,
+                    updated_at TEXT NOT NULL,
+                    profile_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS environmental_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    area_name TEXT,
+                    variable_kind TEXT NOT NULL,
+                    old_state TEXT,
+                    new_state TEXT,
+                    normalized_value TEXT,
+                    used_in_context INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_environmental_events_created_at
+                    ON environmental_events(created_at DESC);
                 """
             )
+
+    def replace_inventory(self, profiles: list[dict[str, Any]]) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute("DELETE FROM inventory_entities")
+            connection.executemany(
+                "INSERT INTO inventory_entities(entity_id, updated_at, profile_json) VALUES (?, ?, ?)",
+                [(str(profile["entity_id"]), utc_now(), json.dumps(profile, sort_keys=True)) for profile in profiles],
+            )
+
+    def inventory(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT profile_json FROM inventory_entities ORDER BY entity_id").fetchall()
+        return [json.loads(row["profile_json"]) for row in rows]
+
+    def add_environmental_event(
+        self,
+        profile: dict[str, Any],
+        old_state: Any,
+        new_state: Any,
+    ) -> int:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """INSERT INTO environmental_events
+                (created_at, entity_id, area_name, variable_kind, old_state, new_state, normalized_value, used_in_context)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    utc_now(),
+                    profile["entity_id"],
+                    profile.get("area_name"),
+                    profile.get("environmental_kind") or "context",
+                    None if old_state is None else str(old_state),
+                    None if new_state is None else str(new_state),
+                    profile.get("normalized_value"),
+                    int(bool(profile.get("is_environmental"))),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def recent_environmental_events(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT id, created_at, entity_id, area_name, variable_kind, old_state, new_state,
+                          normalized_value, used_in_context
+                   FROM environmental_events ORDER BY id DESC LIMIT ?""",
+                (max(1, min(250, limit)),),
+            ).fetchall()
+        return [dict(row) | {"used_in_context": bool(row["used_in_context"])} for row in rows]
+
+    def recent_decisions(self, limit: int = 30) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT id, created_at, context_json, action_json, confidence, decision, reason, executed
+                   FROM decisions ORDER BY id DESC LIMIT ?""",
+                (max(1, min(100, limit)),),
+            ).fetchall()
+        return [
+            {
+                "id": row["id"], "created_at": row["created_at"], "context": json.loads(row["context_json"]),
+                "action": json.loads(row["action_json"]) if row["action_json"] else None,
+                "confidence": row["confidence"], "decision": row["decision"], "reason": row["reason"],
+                "executed": bool(row["executed"]),
+            }
+            for row in rows
+        ]
 
     def add_observation(self, context: dict[str, Any], action: dict[str, Any], source: str) -> int:
         with self._lock, self._connect() as connection:
@@ -178,5 +260,11 @@ class Store:
             decisions = connection.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
             snapshots = connection.execute("SELECT COUNT(*) FROM state_snapshots").fetchone()[0]
             feedback = connection.execute("SELECT COUNT(*) FROM decision_feedback").fetchone()[0]
-        return {"observations": observations, "decisions": decisions, "snapshots": snapshots, "decision_feedback": feedback}
+            environmental_events = connection.execute("SELECT COUNT(*) FROM environmental_events").fetchone()[0]
+            inventory_entities = connection.execute("SELECT COUNT(*) FROM inventory_entities").fetchone()[0]
+        return {
+            "observations": observations, "decisions": decisions, "snapshots": snapshots,
+            "decision_feedback": feedback, "environmental_events": environmental_events,
+            "inventory_entities": inventory_entities,
+        }
 

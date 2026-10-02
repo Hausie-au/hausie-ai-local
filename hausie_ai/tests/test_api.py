@@ -24,3 +24,21 @@ def test_observe_and_decide_api(tmp_path: Path):
         assert body["decision"] == "SUGGEST_ACTION"
         assert body["executed"] is False
 
+
+def test_inventory_and_environment_endpoints(tmp_path: Path):
+    settings = Settings.from_environment().with_data_dir(tmp_path)
+    main.service = HausieAIService(settings)
+    main.service.collect_states([
+        {
+            "entity_id": "sensor.office_temperature", "state": "20.4",
+            "attributes": {"device_class": "temperature", "unit_of_measurement": "°C"},
+        },
+        {"entity_id": "light.office", "state": "off", "attributes": {}},
+    ])
+    with TestClient(main.app) as client:
+        inventory = client.get("/api/v1/inventory")
+        assert inventory.status_code == 200
+        assert inventory.json()["summary"]["environmental_inputs"] == 1
+        assert client.get("/api/v1/context").json()["context"]["environment"]
+        assert client.get("/api/v1/environment/events").status_code == 200
+
