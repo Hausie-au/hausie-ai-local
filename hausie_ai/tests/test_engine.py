@@ -29,3 +29,16 @@ def test_changed_states_are_translated_to_low_risk_actions():
         {"domain": "light", "service": "turn_on", "entity_id": "light.living_room"}
     ]
 
+
+def test_negative_decision_feedback_suppresses_a_learned_action(tmp_path: Path):
+    store = Store(tmp_path)
+    learner = Learner(store, min_observations=3, min_confidence=0.8)
+    context = {"weekday": 1, "hour_bucket": 80, "occupancy": "occupied"}
+    action = {"domain": "light", "service": "turn_on", "entity_id": "light.living_room"}
+    for _ in range(3):
+        learner.observe(context, action, "user")
+
+    decision_id = store.add_decision(context, action, 1.0, "ACTION", "test", True)
+    assert store.add_decision_feedback(decision_id, -1.0, "user_reversal")
+    assert learner.recommend(context)[0] is None
+

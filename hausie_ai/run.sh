@@ -21,6 +21,11 @@ mapping = {
     'min_observations': 'HAUSIE_AI_MIN_OBSERVATIONS',
     'min_confidence': 'HAUSIE_AI_MIN_CONFIDENCE',
     'learn_from_unknown': 'HAUSIE_AI_LEARN_FROM_UNKNOWN',
+    'event_stream_enabled': 'HAUSIE_AI_EVENT_STREAM_ENABLED',
+    'decision_interval_seconds': 'HAUSIE_AI_DECISION_INTERVAL_SECONDS',
+    'action_cooldown_seconds': 'HAUSIE_AI_ACTION_COOLDOWN_SECONDS',
+    'reversal_window_seconds': 'HAUSIE_AI_REVERSAL_WINDOW_SECONDS',
+    'log_level': 'HAUSIE_AI_LOG_LEVEL',
 }
 
 for key, env_name in mapping.items():
@@ -37,6 +42,8 @@ fi
 export HAUSIE_AI_DATA_DIR="${HAUSIE_AI_DATA_DIR:-/data}"
 export HA_URL="${HA_URL:-http://supervisor/core}"
 export HA_TOKEN="${HA_TOKEN:-${SUPERVISOR_TOKEN:-}}"
+
+echo "Hausie AI: starting local runtime (logs below show the learning flow)."
 
 exec python -m hausie_ai.app.main
 

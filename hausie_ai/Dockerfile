@@ -1,5 +1,13 @@
 FROM python:3.11-slim
 
+ARG BUILD_VERSION=0.2.0
+ARG BUILD_ARCH
+
+LABEL \
+  io.hass.version="${BUILD_VERSION}" \
+  io.hass.type="app" \
+  io.hass.arch="${BUILD_ARCH}"
+
 ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 

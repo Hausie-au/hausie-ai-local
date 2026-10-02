@@ -1,10 +1,24 @@
-# Hausie AI add-on
+# Hausie AI app
 
-The add-on observes Home Assistant state through the Supervisor API and stores
-learning data in its `/data` directory. No cloud connection is needed for the
-local learner.
+Hausie AI stores its local SQLite database in `/data/hausie_ai.sqlite3`. The
+database is persistent across app restarts and is included in standard Home
+Assistant backups.
 
-The cloud settings are optional. If configured, only a heartbeat containing
-the add-on version, capability names and aggregate counters is sent. Raw state
-snapshots and entity IDs are never uploaded by this add-on.
+The app has two Home Assistant inputs:
+
+- A periodic REST state snapshot through `http://supervisor/core/api`.
+- An optional real-time `state_changed` WebSocket subscription through the same
+  Supervisor proxy.
+
+No Home Assistant configuration files are mapped into the container and no
+additional privileged capabilities are requested.
+
+Keep `auto_act: false` and `dry_run: true` while reviewing the app log. Only
+actions identified by Home Assistant as user actions become training data by
+default. Existing automations and unknown sources are visible in the log but
+are skipped unless `learn_from_unknown` is enabled for an experiment.
+
+Cloud settings are optional. When configured, the app sends only an aggregate
+heartbeat: app version, capabilities and counters. Raw state snapshots, entity
+IDs and household timelines never leave the local app.
 

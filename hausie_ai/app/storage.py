@@ -51,6 +51,14 @@ class Store:
                     created_at TEXT NOT NULL,
                     states_json TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS decision_feedback (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    decision_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    reward REAL NOT NULL,
+                    source TEXT NOT NULL,
+                    FOREIGN KEY(decision_id) REFERENCES decisions(id)
+                );
                 """
             )
 
@@ -103,18 +111,46 @@ class Store:
             )
             return cursor.rowcount == 1
 
+    def add_decision_feedback(self, decision_id: int, reward: float, source: str) -> bool:
+        with self._lock, self._connect() as connection:
+            decision = connection.execute(
+                "SELECT id FROM decisions WHERE id = ? AND action_json IS NOT NULL",
+                (decision_id,),
+            ).fetchone()
+            if decision is None:
+                return False
+            connection.execute(
+                "INSERT INTO decision_feedback(decision_id, created_at, reward, source) VALUES (?, ?, ?, ?)",
+                (decision_id, utc_now(), max(-1.0, min(1.0, reward)), source),
+            )
+            return True
+
     def candidate_rows(self, context: dict[str, Any]) -> list[sqlite3.Row]:
         with self._connect() as connection:
             return list(
                 connection.execute(
-                    """SELECT action_json, COUNT(*) AS total,
-                    SUM(CASE WHEN reward > 0 THEN 1 ELSE 0 END) AS positive,
-                    AVG(reward) AS average_reward
-                    FROM observations
-                    WHERE context_json = ?
-                    GROUP BY action_json
-                    ORDER BY positive DESC, total DESC""",
-                    (json.dumps(context, sort_keys=True),),
+                    """WITH observation_candidates AS (
+                        SELECT action_json, COUNT(*) AS total,
+                        SUM(CASE WHEN reward > 0 THEN 1 ELSE 0 END) AS positive,
+                        AVG(reward) AS average_reward
+                        FROM observations
+                        WHERE context_json = ?
+                        GROUP BY action_json
+                    ), feedback_candidates AS (
+                        SELECT d.context_json, d.action_json, COUNT(*) AS feedback_count,
+                        AVG(f.reward) AS feedback_average
+                        FROM decision_feedback f
+                        JOIN decisions d ON d.id = f.decision_id
+                        GROUP BY d.context_json, d.action_json
+                    )
+                    SELECT o.action_json, o.total, o.positive, o.average_reward,
+                           COALESCE(f.feedback_count, 0) AS feedback_count,
+                           COALESCE(f.feedback_average, 0.0) AS feedback_average
+                    FROM observation_candidates o
+                    LEFT JOIN feedback_candidates f
+                      ON f.context_json = ? AND f.action_json = o.action_json
+                    ORDER BY o.positive DESC, o.total DESC""",
+                    (json.dumps(context, sort_keys=True), json.dumps(context, sort_keys=True)),
                 )
             )
 
@@ -141,5 +177,6 @@ class Store:
             observations = connection.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
             decisions = connection.execute("SELECT COUNT(*) FROM decisions").fetchone()[0]
             snapshots = connection.execute("SELECT COUNT(*) FROM state_snapshots").fetchone()[0]
-        return {"observations": observations, "decisions": decisions, "snapshots": snapshots}
+            feedback = connection.execute("SELECT COUNT(*) FROM decision_feedback").fetchone()[0]
+        return {"observations": observations, "decisions": decisions, "snapshots": snapshots, "decision_feedback": feedback}
 

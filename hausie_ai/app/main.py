@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from html import escape
+import logging
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -9,7 +10,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from .learning import current_context
-from .service import HausieAIService
+from .service import ADDON_VERSION, HausieAIService
 from .settings import Settings
 
 
@@ -29,23 +30,39 @@ class FeedbackRequest(BaseModel):
     reward: float = Field(ge=-1, le=1)
 
 
+class DecisionFeedbackRequest(BaseModel):
+    reward: float = Field(ge=-1, le=1)
+    source: str = Field(default="explicit_user_feedback", max_length=80)
+
+
 settings = Settings.from_environment()
 service = HausieAIService(settings)
 
 
+def configure_logging() -> None:
+    level = getattr(logging, settings.log_level, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+        force=True,
+    )
+    logging.getLogger("websocket").setLevel(logging.WARNING)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    configure_logging()
     await service.start()
     yield
     await service.stop()
 
 
-app = FastAPI(title="Hausie AI Local", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Hausie AI Local", version=ADDON_VERSION, lifespan=lifespan)
 
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "service": "hausie-ai-local", "mode": service.status()["mode"]}
+    return {"ok": True, "service": "hausie-ai-local", "version": ADDON_VERSION, "mode": service.status()["mode"]}
 
 
 @app.get("/api/v1/status")
@@ -81,6 +98,13 @@ def decide(request: DecideRequest) -> dict[str, Any]:
 def feedback(request: FeedbackRequest) -> dict[str, Any]:
     if not service.store.feedback(request.observation_id, request.reward):
         raise HTTPException(status_code=404, detail="Observation not found.")
+    return {"ok": True}
+
+
+@app.post("/api/v1/decisions/{decision_id}/feedback")
+def decision_feedback(decision_id: int, request: DecisionFeedbackRequest) -> dict[str, Any]:
+    if not service.add_decision_feedback(decision_id, request.reward, request.source):
+        raise HTTPException(status_code=404, detail="Decision with an action was not found.")
     return {"ok": True}
 
 

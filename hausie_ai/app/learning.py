@@ -23,6 +23,8 @@ class Candidate:
     positive: int
     confidence: float
     average_reward: float
+    feedback_count: int
+    feedback_average: float
 
 
 def current_context(states: list[dict[str, Any]], now: datetime | None = None) -> dict[str, Any]:
@@ -60,13 +62,18 @@ class Learner:
         row = rows[0]
         total = int(row["total"])
         positive = int(row["positive"] or 0)
-        confidence = positive / total if total else 0.0
+        base_confidence = positive / total if total else 0.0
+        feedback_count = int(row["feedback_count"] or 0)
+        feedback_average = float(row["feedback_average"] or 0.0)
+        confidence = min(1.0, max(0.0, base_confidence + (feedback_average * 0.2 if feedback_count else 0.0)))
         candidate = Candidate(
             action=json.loads(row["action_json"]),
             total=total,
             positive=positive,
             confidence=confidence,
             average_reward=float(row["average_reward"] or 0.0),
+            feedback_count=feedback_count,
+            feedback_average=feedback_average,
         )
         if total < self.min_observations:
             return None, f"Need {self.min_observations} observations; have {total}."
@@ -74,5 +81,7 @@ class Learner:
             return None, f"Confidence {confidence:.2f} is below {self.min_confidence:.2f}."
         if candidate.average_reward <= 0:
             return None, "The learned feedback is negative for this action."
+        if candidate.feedback_count and candidate.feedback_average <= -0.5:
+            return None, "Recent feedback rejected this learned action."
         return candidate, "Learned from repeated user observations."
 

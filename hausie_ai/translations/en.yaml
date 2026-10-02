@@ -1,0 +1,43 @@
+configuration:
+  cloud_url:
+    name: Hausie AI Cloud URL
+    description: Optional control-plane URL. The local learner works without it.
+  cloud_token:
+    name: Hausie AI Cloud token
+    description: Optional token used only for the aggregate cloud heartbeat.
+  device_id:
+    name: Installation ID
+    description: Optional non-sensitive identifier used by the cloud heartbeat.
+  poll_interval_seconds:
+    name: State snapshot interval
+    description: Seconds between Home Assistant state resyncs.
+  auto_act:
+    name: Enable automatic actions
+    description: Disabled by default. Requires dry-run to be disabled before Hausie AI can call Home Assistant services.
+  dry_run:
+    name: Dry-run mode
+    description: Keep enabled while validating patterns. Hausie AI will only suggest actions.
+  min_observations:
+    name: Minimum observations
+    description: Repeated explicit user actions required before a suggestion is eligible.
+  min_confidence:
+    name: Minimum confidence
+    description: Required positive-observation ratio for a learned suggestion.
+  learn_from_unknown:
+    name: Learn from unknown sources
+    description: Experimental. Disabled by default so existing automations are not mistaken for user preferences.
+  event_stream_enabled:
+    name: Enable real-time event stream
+    description: Subscribe to Home Assistant state_changed events and print the learning flow to the app log.
+  decision_interval_seconds:
+    name: Decision check interval
+    description: Seconds between contextual suggestion checks.
+  action_cooldown_seconds:
+    name: Action cooldown
+    description: Minimum seconds between automatic actions for the same entity.
+  reversal_window_seconds:
+    name: Reversal feedback window
+    description: A user reversal inside this window is recorded as negative feedback.
+  log_level:
+    name: Log level
+    description: Use debug to also see DO_NOTHING decisions and detailed runtime activity.
