@@ -1,0 +1,226 @@
+"use strict";
+
+const pageName = document.body.dataset.page;
+const pageElement = document.getElementById(pageName);
+if (pageElement) pageElement.hidden = false;
+document.querySelector(`[data-nav="${pageName}"]`)?.classList.add("active");
+
+const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, character => ({
+  "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+})[character]);
+const label = value => String(value ?? "").replaceAll("_", " ");
+const metric = (value, title) => `<div class="metric"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(title)}</span></div>`;
+const roles = values => (values || []).map(value => `<span class="tag">${escapeHtml(label(value))}</span>`).join("");
+
+async function getJson(path) {
+  const response = await fetch(path, {cache: "no-store"});
+  if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
+  return response.json();
+}
+
+function showError(error) {
+  const notice = document.getElementById("error");
+  notice.textContent = `Unable to load this page: ${error.message || error}`;
+  notice.hidden = false;
+}
+
+function updateStatus(status) {
+  const connection = document.getElementById("connection");
+  connection.textContent = status.home_assistant_connected ? "Home Assistant connected" : "Waiting for Home Assistant data";
+  const mode = document.getElementById("mode");
+  mode.textContent = status.mode === "auto-act" ? "Auto-act enabled" : "Observe & suggest";
+  mode.classList.toggle("warn", status.mode === "auto-act");
+}
+
+function entityRows(items) {
+  return items.map(item => `<tr>
+    <td><strong>${escapeHtml(item.name)}</strong><br><small>${escapeHtml(item.entity_id)}</small></td>
+    <td>${escapeHtml(item.area_name || "Unassigned")}</td>
+    <td>${escapeHtml(item.state)} ${escapeHtml(item.unit || "")}${item.normalized_value ? `<br><small>band: ${escapeHtml(item.normalized_value)}</small>` : ""}</td>
+    <td>${roles(item.roles)}</td>
+    <td>${escapeHtml(item.safety?.reason || "—")}</td>
+  </tr>`).join("");
+}
+
+function entityTable(items) {
+  return `<div class="table-wrap"><table><thead><tr><th>Entity</th><th>Area</th><th>Current value</th><th>Classification</th><th>Safety</th></tr></thead><tbody>${entityRows(items)}</tbody></table></div>`;
+}
+
+const sensorDomains = new Set(["sensor", "binary_sensor", "weather", "person", "device_tracker"]);
+const validViews = new Set(["devices", "sensors", "automations", "targets", "other", "all"]);
+const explanations = {
+  devices: "Grouped by Home Assistant device. Open a device to see all its entities and their current values.",
+  sensors: "Environmental readings, presence and other sensor entities. Only classified inputs contribute to the model's context.",
+  automations: "Home Assistant automation entities. Their state is visible, but existing automations are not automatically used as training examples.",
+  targets: "Potential control targets. The safety column explains what Hausie AI is allowed to suggest or why it is blocked.",
+  other: "Entities that are not in the sensor, automation or action-target categories.",
+  all: "Every state entity Hausie AI currently receives from Home Assistant."
+};
+
+let inventoryData = {entities: [], summary: {}, registry_available: false};
+let currentView = validViews.has(new URLSearchParams(location.search).get("view")) ? new URLSearchParams(location.search).get("view") : "devices";
+let pageIndex = 0;
+const pageSize = 40;
+
+function inventoryGroups(entities) {
+  const devices = new Map();
+  for (const entity of entities) {
+    if (!entity.device_id) continue;
+    if (!devices.has(entity.device_id)) devices.set(entity.device_id, {
+      id: entity.device_id, name: entity.device_name || entity.device_id,
+      area: entity.area_name || "Unassigned", entities: []
+    });
+    devices.get(entity.device_id).entities.push(entity);
+  }
+  const isTarget = item => (item.roles || []).some(role => role === "safe_action_target" || role === "blocked_action_target");
+  const isSensor = item => sensorDomains.has(item.domain);
+  const isAutomation = item => item.domain === "automation";
+  return {
+    devices: Array.from(devices.values()).sort((a, b) => a.name.localeCompare(b.name)),
+    sensors: entities.filter(isSensor),
+    automations: entities.filter(isAutomation),
+    targets: entities.filter(isTarget),
+    other: entities.filter(item => !isSensor(item) && !isAutomation(item) && !isTarget(item)),
+    all: entities
+  };
+}
+
+function populateAttributeFilters() {
+  const entities = inventoryData.entities || [];
+  const specifications = {
+    "filter-area": ["Any area", item => [item.area_name]],
+    "filter-domain": ["Any domain", item => [item.domain]],
+    "filter-class": ["Any class", item => [item.device_class]],
+    "filter-role": ["Any role", item => item.roles || []],
+    "filter-safety": ["Any classification", item => [item.safety?.classification]],
+    "filter-label": ["Any label", item => item.labels || []]
+  };
+  for (const [id, [placeholder, valuesFor]] of Object.entries(specifications)) {
+    const select = document.getElementById(id);
+    const previous = select.value;
+    const values = [...new Set(entities.flatMap(valuesFor).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b)));
+    select.replaceChildren(new Option(placeholder, ""), ...values.map(value => new Option(label(value), value)));
+    if (values.includes(previous)) select.value = previous;
+  }
+}
+
+function filteredEntities() {
+  const filters = {
+    area: document.getElementById("filter-area").value,
+    domain: document.getElementById("filter-domain").value,
+    state: document.getElementById("filter-state").value.trim().toLocaleLowerCase(),
+    deviceClass: document.getElementById("filter-class").value,
+    role: document.getElementById("filter-role").value,
+    safety: document.getElementById("filter-safety").value,
+    label: document.getElementById("filter-label").value,
+    query: document.getElementById("inventory-search").value.trim().toLocaleLowerCase()
+  };
+  return (inventoryData.entities || []).filter(item => {
+    if (filters.area && item.area_name !== filters.area) return false;
+    if (filters.domain && item.domain !== filters.domain) return false;
+    if (filters.state && !String(item.state ?? "").toLocaleLowerCase().includes(filters.state)) return false;
+    if (filters.deviceClass && item.device_class !== filters.deviceClass) return false;
+    if (filters.role && !(item.roles || []).includes(filters.role)) return false;
+    if (filters.safety && item.safety?.classification !== filters.safety) return false;
+    if (filters.label && !(item.labels || []).includes(filters.label)) return false;
+    if (filters.query) {
+      const fields = [item.name, item.entity_id, item.area_name, item.device_name, item.device_id, item.state, item.device_class, ...(item.labels || [])];
+      if (!fields.some(field => String(field ?? "").toLocaleLowerCase().includes(filters.query))) return false;
+    }
+    return true;
+  });
+}
+
+function renderInventory() {
+  const groups = inventoryGroups(filteredEntities());
+  for (const [view, items] of Object.entries(groups)) {
+    const count = document.querySelector(`[data-count="${view}"]`);
+    if (count) count.textContent = `(${items.length})`;
+  }
+  document.querySelectorAll("#inventory-tabs button").forEach(button => {
+    const selected = button.dataset.view === currentView;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+  document.getElementById("inventory-explanation").textContent = explanations[currentView];
+  const items = groups[currentView];
+  const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
+  pageIndex = Math.min(pageIndex, totalPages - 1);
+  const visible = items.slice(pageIndex * pageSize, (pageIndex + 1) * pageSize);
+  document.getElementById("inventory-count").textContent = `${items.length} ${currentView === "devices" ? "devices" : "entities"}`;
+  document.getElementById("page-indicator").textContent = `Page ${pageIndex + 1} of ${totalPages}`;
+  document.getElementById("previous-page").disabled = pageIndex === 0;
+  document.getElementById("next-page").disabled = pageIndex >= totalPages - 1;
+  const results = document.getElementById("inventory-results");
+  if (!items.length) {
+    const filtering = [...document.querySelectorAll(".filters select, .filters input, #inventory-search")].some(control => control.value);
+    results.innerHTML = `<div class="empty">${filtering ? "No matching items in this category." : "No items in this category yet."}</div>`;
+  } else if (currentView === "devices") {
+    results.innerHTML = `<div class="device-list">${visible.map(device => `<details class="device"><summary><span><strong>${escapeHtml(device.name)}</strong><small>${escapeHtml(device.area)} · ${device.entities.length} entities</small></span></summary>${entityTable(device.entities)}</details>`).join("")}</div>`;
+  } else {
+    results.innerHTML = entityTable(visible);
+  }
+}
+
+function prepareInventoryControls() {
+  document.getElementById("inventory-tabs").addEventListener("click", event => {
+    const button = event.target.closest("button[data-view]");
+    if (!button) return;
+    currentView = button.dataset.view;
+    pageIndex = 0;
+    const url = new URL(location.href);
+    url.searchParams.set("view", currentView);
+    history.replaceState(null, "", url);
+    renderInventory();
+  });
+  document.getElementById("inventory-search").addEventListener("input", () => { pageIndex = 0; renderInventory(); });
+  document.querySelectorAll(".filters select, .filters input").forEach(control => {
+    control.addEventListener(control.tagName === "SELECT" ? "change" : "input", () => { pageIndex = 0; renderInventory(); });
+  });
+  document.getElementById("clear-filters").addEventListener("click", () => {
+    document.getElementById("inventory-search").value = "";
+    document.querySelectorAll(".filters select, .filters input").forEach(control => { control.value = ""; });
+    pageIndex = 0;
+    renderInventory();
+  });
+  document.getElementById("previous-page").addEventListener("click", () => { pageIndex--; renderInventory(); });
+  document.getElementById("next-page").addEventListener("click", () => { pageIndex++; renderInventory(); });
+}
+
+async function loadPage() {
+  const status = await getJson("api/v1/status");
+  updateStatus(status);
+  if (pageName === "overview") {
+    const inventory = await getJson("api/v1/inventory");
+    document.getElementById("summary").innerHTML = [
+      metric(inventory.summary.entities, "Entities visible"),
+      metric(inventory.summary.environmental_inputs, "Environmental inputs"),
+      metric(inventory.summary.safe_action_targets, "Safe action targets"),
+      metric(status.stats?.observations ?? 0, "Learning observations")
+    ].join("");
+    document.getElementById("context").textContent = JSON.stringify(status.current_context || {status: "Waiting for the first snapshot"}, null, 2);
+  } else if (pageName === "inventory") {
+    inventoryData = await getJson("api/v1/inventory");
+    if (!new URLSearchParams(location.search).has("view") && inventoryGroups(inventoryData.entities || []).devices.length === 0) currentView = "all";
+    populateAttributeFilters();
+    document.getElementById("inventory-summary").innerHTML = [
+      metric(inventoryData.summary.entities, "Entities"),
+      metric(inventoryData.summary.environmental_inputs, "Environmental inputs"),
+      metric(inventoryData.summary.safe_action_targets, "Safe action targets"),
+      metric(inventoryData.summary.blocked_action_targets, "Blocked targets")
+    ].join("");
+    document.getElementById("registry-note").hidden = inventoryData.registry_available;
+    renderInventory();
+  } else if (pageName === "activity") {
+    const events = await getJson("api/v1/environment/events?limit=100");
+    document.getElementById("events").innerHTML = events.map(item => `<tr><td>${escapeHtml(item.created_at)}</td><td>${escapeHtml(item.entity_id)}</td><td>${escapeHtml(item.area_name || "Unassigned")}</td><td>${escapeHtml(item.old_state)} → ${escapeHtml(item.new_state)}</td><td>${escapeHtml(item.normalized_value || "")}</td></tr>`).join("") || '<tr><td colspan="5">No environmental or occupancy changes recorded yet.</td></tr>';
+  } else if (pageName === "decisions") {
+    const decisions = await getJson("api/v1/decisions?limit=100");
+    document.getElementById("decisions-table").innerHTML = decisions.map(item => `<tr><td>${escapeHtml(item.created_at)}</td><td>${escapeHtml(item.decision)} (${escapeHtml(Number(item.confidence).toFixed(2))})</td><td>${escapeHtml(item.action ? `${item.action.domain}.${item.action.service} ${item.action.entity_id}` : "—")}</td><td>${escapeHtml(item.reason)}</td></tr>`).join("") || '<tr><td colspan="4">No decisions recorded yet.</td></tr>';
+  }
+  document.getElementById("error").hidden = true;
+}
+
+if (pageName === "inventory") prepareInventoryControls();
+loadPage().catch(showError);
+setInterval(() => loadPage().catch(showError), pageName === "inventory" ? 30000 : 15000);

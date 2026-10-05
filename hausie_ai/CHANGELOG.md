@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0
+
+- Split the Ingress UI into Overview, Inventory, Environmental activity and
+  Decisions pages.
+- Group the inventory by Home Assistant devices, sensors and presence,
+  automations, action targets, other entities and all entities.
+- Add inventory search, pagination and expandable device details, plus
+  combinable filters for area, domain, state, device class, role, safety and label.
+
 ## 0.3.3
 
 - Fix Ingress 404 caused by a leading slash in `ingress_entry`, which

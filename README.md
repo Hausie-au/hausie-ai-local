@@ -137,9 +137,18 @@ This repository is a standalone custom app repository. In Home Assistant:
    configuration.
 4. Start it and open the **Log** tab. The first startup creates
    `/data/hausie_ai.sqlite3` automatically.
-5. Open **Hausie AI** from the sidebar or use **Open Web UI** on its app page to
-   inspect the inventory, context, environmental events and decisions. The
-   panel uses Home Assistant Ingress and has no separate network port to open.
+5. Open **Hausie AI** from the sidebar or use **Open Web UI** on its app page.
+   The panel uses Home Assistant Ingress and has no separate network port to
+   open. The Overview links to separate Inventory, Environmental activity and
+   Decisions pages.
+
+In version `0.4.0`, **What Hausie AI can see** is a dedicated Inventory page.
+Browse Home Assistant devices (expand each device for its entities), sensors
+and presence, automations, action targets, other entities or all entities.
+Search and paginate the results, or combine filters for area, domain, state,
+device class, Hausie AI role, safety classification and Home Assistant label.
+Device grouping requires Home Assistant's device registry; entities remain
+visible in the other categories while that registry is unavailable.
 
 If the panel shows `{"detail":"Not Found"}`, refresh the App Store repository,
 update Hausie AI to version `0.3.3` or newer, and reopen the panel. Earlier

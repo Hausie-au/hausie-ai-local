@@ -10,6 +10,13 @@ The app has two Home Assistant inputs:
 - An optional real-time `state_changed` WebSocket subscription through the same
   Supervisor proxy.
 
+The Ingress UI has separate Overview, Inventory, Environmental activity and
+Decisions pages. The Inventory groups entities by devices, sensors and
+presence, automations, action targets and other entities. Its filters can be
+combined by area, domain, state, device class, Hausie AI role, safety
+classification and Home Assistant label. It shows only data already available
+to the local app; the UI does not change the learning or action safety rules.
+
 No Home Assistant configuration files are mapped into the container and no
 additional privileged capabilities are requested.
 

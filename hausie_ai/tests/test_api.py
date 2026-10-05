@@ -48,8 +48,9 @@ def test_ingress_panel_uses_supervisor_base_path(tmp_path: Path):
     with TestClient(main.app) as client:
         response = client.get("/ui", headers={"X-Ingress-Path": "/api/hassio_ingress/example-token"})
         assert response.status_code == 200
-        assert "<base href='/api/hassio_ingress/example-token/'>" in response.text
-        assert "fetch('api/v1/status')" in response.text
+        assert '<base href="/api/hassio_ingress/example-token/">' in response.text
+        assert 'href="ui/inventory"' in response.text
+        assert 'src="ui/assets/app.js?v=0.4.0"' in response.text
         assert client.get("/ui/").status_code == 200
         assert client.get("/ui//").status_code == 200
         assert client.get("http://testserver//ui").status_code == 200
@@ -64,6 +65,32 @@ def test_ingress_panel_uses_supervisor_base_path(tmp_path: Path):
             headers={"X-Ingress-Path": "/api/hassio_ingress/example-token"},
         ).status_code == 200
         assert client.get("/").status_code == 200
+
+
+def test_separate_ui_pages_filters_and_assets_work_through_ingress(tmp_path: Path):
+    main.service = HausieAIService(Settings.from_environment().with_data_dir(tmp_path))
+    header = {"X-Ingress-Path": "/api/hassio_ingress/example-token"}
+    with TestClient(main.app) as client:
+        for page, marker in [
+            ("inventory", 'id="filter-area"'),
+            ("activity", 'id="events"'),
+            ("decisions", 'id="decisions-table"'),
+        ]:
+            response = client.get(f"/api/hassio_ingress/example-token/ui/{page}", headers=header)
+            assert response.status_code == 200
+            assert '<base href="/api/hassio_ingress/example-token/">' in response.text
+            assert f'<body data-page="{page}">' in response.text
+            assert marker in response.text
+        javascript = client.get("/api/hassio_ingress/example-token/ui/assets/app.js", headers=header)
+        assert javascript.status_code == 200
+        assert javascript.headers["content-type"].startswith("text/javascript")
+        assert "filteredEntities" in javascript.text
+        stylesheet = client.get("/ui/assets/style.css")
+        assert stylesheet.status_code == 200
+        assert stylesheet.headers["content-type"].startswith("text/css")
+        assert client.get("/ui/assets/unknown.txt").status_code == 404
+        assert client.get("/ui/not-a-page").status_code == 404
+        assert client.get("http://testserver//ui/inventory").status_code == 200
 
 
 def test_supervisor_ingress_entry_does_not_create_double_slash():

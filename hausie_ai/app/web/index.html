@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <base href="__BASE_HREF__">
+  <title>Hausie AI</title>
+  <link rel="stylesheet" href="ui/assets/style.css?v=__VERSION__">
+  <script src="ui/assets/app.js?v=__VERSION__" defer></script>
+</head>
+<body data-page="__PAGE__">
+  <div class="shell">
+    <header class="header">
+      <div><p class="eyebrow">LOCAL HOME INTELLIGENCE</p><h1>Hausie AI</h1></div>
+      <div class="header-status"><span id="connection" class="muted">Connecting…</span><span id="mode" class="pill">Loading…</span></div>
+    </header>
+    <nav class="nav" aria-label="Hausie AI pages">
+      <a href="ui" data-nav="overview">Overview</a>
+      <a href="ui/inventory" data-nav="inventory">What Hausie AI can see</a>
+      <a href="ui/activity" data-nav="activity">Environmental activity</a>
+      <a href="ui/decisions" data-nav="decisions">Decisions</a>
+    </nav>
+    <p id="error" class="error" role="alert" hidden></p>
+
+    <main id="overview" hidden>
+      <div class="intro"><h2>Overview</h2><p>A quick look at what Hausie AI observes and learns locally.</p></div>
+      <div id="summary" class="metrics"></div>
+      <div class="card-grid">
+        <a class="feature" href="ui/inventory"><span class="feature-icon">◎</span><h3>What Hausie AI can see</h3><p>Browse devices, sensors, automations and action targets.</p><span class="feature-link">Open inventory →</span></a>
+        <a class="feature" href="ui/activity"><span class="feature-icon">◷</span><h3>Environmental activity</h3><p>See sensor and occupancy changes recorded locally.</p><span class="feature-link">View activity →</span></a>
+        <a class="feature" href="ui/decisions"><span class="feature-icon">✧</span><h3>Decisions</h3><p>Review suggestions, non-actions and the reasons behind them.</p><span class="feature-link">View decisions →</span></a>
+      </div>
+      <section class="panel"><h3>Context used now</h3><p class="muted">Time, occupancy and stable environmental bands help explain each decision.</p><pre id="context">Waiting for the first Home Assistant snapshot…</pre></section>
+    </main>
+
+    <main id="inventory" hidden>
+      <div class="intro"><h2>What Hausie AI can see</h2><p>Every entity below comes from Home Assistant. Categories help you inspect the inventory without one enormous list.</p></div>
+      <div id="inventory-summary" class="metrics"></div>
+      <p id="registry-note" class="notice" hidden>Home Assistant's device registry is not available yet. Entities still appear under the other categories; device grouping will appear when the registry loads.</p>
+      <nav id="inventory-tabs" class="tabs" aria-label="Inventory categories">
+        <button type="button" data-view="devices">Devices <span data-count="devices"></span></button>
+        <button type="button" data-view="sensors">Sensors &amp; presence <span data-count="sensors"></span></button>
+        <button type="button" data-view="automations">Automations <span data-count="automations"></span></button>
+        <button type="button" data-view="targets">Action targets <span data-count="targets"></span></button>
+        <button type="button" data-view="other">Other <span data-count="other"></span></button>
+        <button type="button" data-view="all">All entities <span data-count="all"></span></button>
+      </nav>
+      <div class="toolbar"><label for="inventory-search">Search</label><input id="inventory-search" type="search" placeholder="Name, entity ID, area or device" autocomplete="off"><span id="inventory-count" class="muted"></span></div>
+      <div class="filters" aria-label="Filter inventory by attributes">
+        <label>Area<select id="filter-area"><option value="">Any area</option></select></label>
+        <label>Domain<select id="filter-domain"><option value="">Any domain</option></select></label>
+        <label>State<input id="filter-state" type="text" placeholder="Any state"></label>
+        <label>Device class<select id="filter-class"><option value="">Any class</option></select></label>
+        <label>Hausie AI role<select id="filter-role"><option value="">Any role</option></select></label>
+        <label>Safety<select id="filter-safety"><option value="">Any classification</option></select></label>
+        <label>Label<select id="filter-label"><option value="">Any label</option></select></label>
+        <button id="clear-filters" type="button">Clear filters</button>
+      </div>
+      <p id="inventory-explanation" class="muted"></p>
+      <div id="inventory-results"></div>
+      <div class="pager"><button id="previous-page" type="button">Previous</button><span id="page-indicator" aria-live="polite"></span><button id="next-page" type="button">Next</button></div>
+      <p class="muted small">A device can also appear under Sensors or Action targets. “Safe” means eligible for a suggestion, not that Hausie AI will act automatically.</p>
+    </main>
+
+    <main id="activity" hidden>
+      <div class="intro"><h2>Environmental activity</h2><p>Recent sensor and occupancy changes stored on this Home Assistant installation.</p></div>
+      <div class="table-wrap"><table><thead><tr><th>When</th><th>Entity</th><th>Area</th><th>Change</th><th>Context band</th></tr></thead><tbody id="events"></tbody></table></div>
+    </main>
+
+    <main id="decisions" hidden>
+      <div class="intro"><h2>Recent decisions</h2><p>Review why Hausie AI suggested an action or chose to do nothing.</p></div>
+      <div class="table-wrap"><table><thead><tr><th>When</th><th>Decision</th><th>Action</th><th>Why</th></tr></thead><tbody id="decisions-table"></tbody></table></div>
+    </main>
+
+    <footer><a href="docs">API documentation</a><span aria-hidden="true">·</span><a href="api/v1/status">Status JSON</a><span class="muted">Hausie AI __VERSION__ · Data stays local</span></footer>
+  </div>
+</body>
+</html>
