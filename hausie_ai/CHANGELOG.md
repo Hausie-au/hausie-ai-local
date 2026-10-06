@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1
+
+- Align the Dockerfile's default build version with the add-on version.
+- Validate an ARM64 image build in CI for Raspberry Pi installations.
+
 ## 0.5.0
 
 - Add event-based and adaptive/seasonal shadow learners alongside the exact

@@ -54,7 +54,7 @@ def test_ingress_panel_uses_supervisor_base_path(tmp_path: Path):
         assert response.status_code == 200
         assert '<base href="/api/hassio_ingress/example-token/">' in response.text
         assert 'href="ui/inventory"' in response.text
-        assert 'src="ui/assets/app.js?v=0.5.0"' in response.text
+        assert 'src="ui/assets/app.js?v=0.5.1"' in response.text
         assert client.get("/ui/").status_code == 200
         assert client.get("/ui//").status_code == 200
         assert client.get("http://testserver//ui").status_code == 200
