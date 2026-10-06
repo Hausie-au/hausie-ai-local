@@ -26,6 +26,13 @@ Hausie AI is the local decision layer above it.
   actions made by an identifiable Home Assistant user.
 - Uses a transparent frequency model with minimum-observation and confidence
   thresholds.
+- Evaluates three methods side by side: the original exact-context learner,
+  an event-based learner and an adaptive/seasonal event learner. The latter
+  two run only in shadow mode and cannot call Home Assistant services.
+- Associates a user action with the latest relevant, same-area stimulus within
+  10 minutes. Predictions are saved before the later action trains the models.
+- Records area sensor values before a manual action and approximately 30
+  minutes later as observational evidence, never as proof of causation.
 - Chooses `DO_NOTHING`, `SUGGEST_ACTION`, or an opt-in `ACTION`.
 - Keeps its SQLite database, snapshots, observations and feedback in the
   app's persistent `/data` volume.
@@ -99,6 +106,43 @@ in its first learner. For example, `23.8 C` and `24.2 C` both become
 `comfortable`. This prevents a new model context being created for every small
 sensor fluctuation while still making the environmental condition visible.
 
+### Event and seasonal learners (shadow mode)
+
+The original exact-context learner remains the only method feeding the
+Decisions page and the opt-in automatic-action path. It is also the reference
+against which the new methods are compared. No new method is promoted silently.
+
+When an area sensor changes band or crosses a meaningful cumulative threshold
+(temperature 0.5 C, humidity/moisture 5 points, illuminance 20 lux), or an
+area presence/opening input changes, the add-on creates a local opportunity.
+All three methods predict at that point, before any later user action is
+recorded. If an identifiable user changes a low-risk device in the same area
+within 10 minutes, the latest compatible opportunity is labelled with that
+action. Automation-origin and unknown-origin actions do not label shadow
+opportunities; `learn_from_unknown` affects only the original learner.
+
+The event learner compares stimulus kind, direction and area without requiring
+identical weekdays or unrelated environmental readings. The adaptive/seasonal
+learner additionally weights recent examples more and gives a modest
+preference to the same Australian meteorological season. Neither requires
+waiting a full year. Both require enough comparable actions and sufficient
+agreement among alternatives. Predictions pass the shared safety check and
+cannot execute devices. There is no automatic winner selection.
+
+The comparison page reports opportunities, predictions, opportunities with a
+user action, matches and different predicted actions. These are not acceptance
+or causal-effect metrics: an unlabelled opportunity is not counted as a failure,
+and a match only means Hausie predicted what the user later did. Only visible
+suggestions on the Decisions page can receive explicit helpful/not-helpful
+feedback. Shadow predictions cannot be rated because they were never shown.
+
+The observed after-effects section compares same-area environmental sensors
+before a user action and roughly 30 minutes later. Other user actions in that
+area are counted, but weather, automations and unobserved factors may still
+explain the difference. This is inspection-only and does not train an action
+policy. Episodes created before installing 0.5.0 are not backfilled; existing
+SQLite observations remain intact.
+
 ## Safety and privacy
 
 Safety is independent of the learner. The current allow-list is deliberately
@@ -142,13 +186,16 @@ This repository is a standalone custom app repository. In Home Assistant:
    open. The Overview links to separate Inventory, Environmental activity and
    Decisions pages.
 
-In version `0.4.0`, **What Hausie AI can see** is a dedicated Inventory page.
+In version `0.5.0`, **What Hausie AI can see** is a dedicated Inventory page.
 Browse Home Assistant devices (expand each device for its entities), sensors
 and presence, automations, action targets, other entities or all entities.
 Search and paginate the results, or combine filters for area, domain, state,
 device class, Hausie AI role, safety classification and Home Assistant label.
 Device grouping requires Home Assistant's device registry; entities remain
-visible in the other categories while that registry is unavailable.
+visible in the other categories while that registry is unavailable. The new
+Learning methods page also needs area assignments to associate a room sensor
+with an action target. Without an assigned area, the original learner still
+works but the event cannot become a room-specific episode.
 
 If the panel shows `{"detail":"Not Found"}`, refresh the App Store repository,
 update Hausie AI to version `0.3.3` or newer, and reopen the panel. Earlier
@@ -205,6 +252,11 @@ An automatic action has a per-entity cooldown. If a user reverses it inside
 the configured reversal window, Hausie AI records negative decision feedback.
 
 ## API for local inspection and controlled tests
+
+The read-only learning endpoints are `GET /api/v1/learning/comparison` for
+shadow predictions and `GET /api/v1/learning/outcomes` for observational
+before/after sensor readings. Existing observation, decision and feedback
+endpoints remain available.
 
 The Ingress panel exposes FastAPI documentation at `/docs`. Useful endpoints:
 

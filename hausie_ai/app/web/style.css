@@ -30,6 +30,7 @@ p{line-height:1.5}
 .feature p{margin:0;color:#607579;font-size:14px}
 .feature-link{display:block;margin-top:18px;color:#08766d;font-weight:750;font-size:13px}
 .panel{margin-top:22px;padding:22px;border:1px solid #e2ece7;border-radius:16px;background:white}
+.section-title{margin:26px 0 12px}
 .panel p{margin:0 0 15px}
 pre{overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#f2f6f4;border-radius:10px;padding:15px;margin:0;font-size:13px}
 .notice,.error{border-radius:11px;padding:11px 14px}
@@ -37,6 +38,7 @@ pre{overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#f2f6f4
 .error{background:#fde8e4;color:#8a332c}
 .tabs{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 18px}
 .tabs button,.pager button{border:1px solid #cdded8;background:white;color:#315b5f;border-radius:10px;padding:9px 12px;cursor:pointer;font:inherit;font-size:13px;font-weight:650}
+.feedback-button{border:1px solid #cdded8;border-radius:8px;background:#f5f9f7;color:#315b5f;padding:6px 8px;cursor:pointer;font:inherit;font-size:12px;white-space:nowrap}
 .tabs button:hover,.tabs button.active{background:#0c746a;border-color:#0c746a;color:white}
 .tabs span{opacity:.75}
 .toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 13px}

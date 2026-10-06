@@ -15,5 +15,5 @@ jobs:
       - run: python -m pip install -r hausie_ai/requirements.txt pytest httpx
       - run: pytest -q
       - run: node --test hausie_ai/tests/test_ui.mjs
-      - run: docker build --build-arg BUILD_VERSION=0.4.0 --build-arg BUILD_ARCH=amd64 -t hausie-ai-local:ci hausie_ai
+      - run: docker build --build-arg BUILD_VERSION=0.5.0 --build-arg BUILD_ARCH=amd64 -t hausie-ai-local:ci hausie_ai
 

@@ -23,6 +23,10 @@ def test_observe_and_decide_api(tmp_path: Path):
         body = response.json()
         assert body["decision"] == "SUGGEST_ACTION"
         assert body["executed"] is False
+        feedback = client.post(f"/api/v1/decisions/{body['decision_id']}/feedback", json={"reward": -1})
+        assert feedback.status_code == 200
+        assert client.get("/api/v1/decisions").json()[0]["rated"] is True
+        assert client.post(f"/api/v1/decisions/{body['decision_id']}/feedback", json={"reward": 1}).status_code == 404
 
 
 def test_inventory_and_environment_endpoints(tmp_path: Path):
@@ -50,7 +54,7 @@ def test_ingress_panel_uses_supervisor_base_path(tmp_path: Path):
         assert response.status_code == 200
         assert '<base href="/api/hassio_ingress/example-token/">' in response.text
         assert 'href="ui/inventory"' in response.text
-        assert 'src="ui/assets/app.js?v=0.4.0"' in response.text
+        assert 'src="ui/assets/app.js?v=0.5.0"' in response.text
         assert client.get("/ui/").status_code == 200
         assert client.get("/ui//").status_code == 200
         assert client.get("http://testserver//ui").status_code == 200
@@ -75,6 +79,7 @@ def test_separate_ui_pages_filters_and_assets_work_through_ingress(tmp_path: Pat
             ("inventory", 'id="filter-area"'),
             ("activity", 'id="events"'),
             ("decisions", 'id="decisions-table"'),
+            ("learning", 'id="learning-methods"'),
         ]:
             response = client.get(f"/api/hassio_ingress/example-token/ui/{page}", headers=header)
             assert response.status_code == 200
@@ -91,6 +96,10 @@ def test_separate_ui_pages_filters_and_assets_work_through_ingress(tmp_path: Pat
         assert client.get("/ui/assets/unknown.txt").status_code == 404
         assert client.get("/ui/not-a-page").status_code == 404
         assert client.get("http://testserver//ui/inventory").status_code == 200
+        comparison = client.get("/api/hassio_ingress/example-token/api/v1/learning/comparison", headers=header)
+        assert comparison.status_code == 200
+        assert comparison.json() == {"methods": [], "recent": []}
+        assert client.get("/api/v1/learning/outcomes").json() == []
 
 
 def test_supervisor_ingress_entry_does_not_create_double_slash():

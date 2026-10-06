@@ -8,14 +8,15 @@ from typing import Any
 
 from .cloud import CloudClient
 from .events import HomeAssistantEventStream
+from .experiments import RELEVANT_KINDS, ShadowLearners
 from .ha import HomeAssistantClient
-from .inventory import InventoryBuilder
+from .inventory import InventoryBuilder, normalize_environmental_value
 from .learning import Learner, current_context
 from .safety import SafetyPolicy
 from .settings import Settings
 from .storage import Store
 
-ADDON_VERSION = "0.4.0"
+ADDON_VERSION = "0.5.0"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -25,6 +26,13 @@ class ExecutedAction:
     action: dict[str, Any]
     expected_state: str
     executed_at: float
+
+
+@dataclass(frozen=True)
+class RecentTrigger:
+    opportunity_id: int
+    trigger: dict[str, Any]
+    at: float
 
 
 def action_from_state_change(old_state: dict[str, Any] | None, new_state: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -84,6 +92,7 @@ class HausieAIService:
         self.settings = settings
         self.store = Store(settings.data_dir)
         self.learner = Learner(self.store, settings.min_observations, settings.min_confidence)
+        self.shadow_learners = ShadowLearners(self.store, self.learner, settings.min_observations, settings.min_confidence)
         self.safety = SafetyPolicy()
         self.inventory_builder = InventoryBuilder(self.safety)
         self.ha = HomeAssistantClient(settings.ha_url, settings.ha_token)
@@ -106,6 +115,8 @@ class HausieAIService:
         self._last_decision_attempt = 0.0
         self._last_action_attempt: dict[str, float] = {}
         self._executed_actions: dict[str, ExecutedAction] = {}
+        self._recent_triggers: list[RecentTrigger] = []
+        self._trigger_baselines: dict[str, str] = {}
 
     async def start(self) -> None:
         self._stop.clear()
@@ -186,6 +197,9 @@ class HausieAIService:
         self.inventory_by_entity = {str(profile["entity_id"]): profile for profile in self.inventory_profiles}
         self.store.replace_inventory(self.inventory_profiles)
         self.store.add_snapshot(states)
+        for pending in self.store.pending_action_outcomes():
+            if self.store.finish_action_outcome(pending["id"], self._area_environment(pending["area"])):
+                LOGGER.info("OUTCOME id=%s area=%s window=30m observational_only=true", pending["id"], pending["area"])
         inventory_summary = self.inventory_builder.summary(self.inventory_profiles)
         LOGGER.info(
             "SNAPSHOT entities=%s observations=%s environmental=%s context_inputs=%s safe_targets=%s",
@@ -215,7 +229,16 @@ class HausieAIService:
 
         self._record_reversal_if_needed(entity_id, new_value, source)
         if action:
+            associated = self._associated_trigger(entity_id, source)
+            if associated and self.store.label_shadow_opportunity(associated.opportunity_id, action):
+                self.store.add_experience(context_before, associated.trigger, action, source)
+                LOGGER.info("EXPERIENCE opportunity_id=%s source=%s trigger=%s action=%s", associated.opportunity_id, source, associated.trigger, action)
             self._learn_from_event(context_before, action, source)
+            if source == "user":
+                area = self.inventory_by_entity.get(entity_id, {}).get("area_id")
+                if area:
+                    outcome_id = self.store.start_action_outcome(str(area), action, self._area_environment(str(area)))
+                    LOGGER.info("OUTCOME id=%s area=%s status=pending window=30m", outcome_id, area)
 
         self.state_index[entity_id] = new_state
         self.last_states = list(self.state_index.values())
@@ -229,6 +252,20 @@ class HausieAIService:
                 event_id, entity_id, profile.get("environmental_kind"), profile.get("area_name") or "unassigned",
                 old_value, new_value, profile.get("normalized_value"), profile["is_environmental"],
             )
+            trigger = self._significant_trigger(profile, old_value, new_value)
+            if trigger:
+                context_after = self.current_context()
+                predictions = self.shadow_learners.predict(context_after, trigger)
+                for prediction in predictions.values():
+                    candidate_action = prediction["action"]
+                    if candidate_action and (not self.safety.evaluate(candidate_action).allowed or
+                                             candidate_action.get("entity_id") not in self.state_index or
+                                             not self._action_is_needed(candidate_action)):
+                        prediction.update(action=None, confidence=0.0, reason="Safety or current state blocks this candidate.")
+                opportunity_id = self.store.add_shadow_opportunity(trigger, context_after, predictions)
+                self._recent_triggers.append(RecentTrigger(opportunity_id, trigger, monotonic()))
+                self._recent_triggers = self._recent_triggers[-100:]
+                LOGGER.info("SHADOW opportunity_id=%s trigger=%s predictions=%s", opportunity_id, trigger, predictions)
 
         if self._is_context_trigger(profile):
             context_after = self.current_context()
@@ -253,6 +290,57 @@ class HausieAIService:
             LOGGER.info("LEARN observation_id=%s source=%s action=%s context=%s", observation_id, source, action, context)
         else:
             LOGGER.info("LEARN skipped source=%s action=%s reason=explicit-user-events-only", source, action)
+
+    def _associated_trigger(self, entity_id: str, source: str) -> RecentTrigger | None:
+        if source != "user":
+            return None
+        target = self.inventory_by_entity.get(entity_id, {})
+        area = target.get("area_id") or target.get("area_name")
+        if not area:
+            return None
+        domain = entity_id.split(".", 1)[0]
+        now = monotonic()
+        for recent in reversed(self._recent_triggers):
+            trigger = recent.trigger
+            if now - recent.at <= 600 and trigger.get("area") == area and trigger.get("kind") in RELEVANT_KINDS.get(domain, set()):
+                self._recent_triggers.remove(recent)
+                return recent
+        return None
+
+    def _significant_trigger(self, profile: dict[str, Any], old_value: str, new_value: str) -> dict[str, Any] | None:
+        kind = str(profile.get("environmental_kind") or "")
+        area = profile.get("area_id") or profile.get("area_name")
+        if (not area or kind not in set().union(*RELEVANT_KINDS.values()) or
+                old_value.lower() in {"", "unknown", "unavailable", "none"} or
+                new_value.lower() in {"", "unknown", "unavailable", "none"}):
+            return None
+        entity_id = str(profile["entity_id"])
+        baseline = self._trigger_baselines.get(entity_id, old_value)
+        old_band = normalize_environmental_value(kind, baseline)
+        new_band = normalize_environmental_value(kind, new_value)
+        numeric_delta: float | None = None
+        try:
+            numeric_delta = float(new_value) - float(baseline)
+        except (TypeError, ValueError):
+            pass
+        thresholds = {"temperature": 0.5, "humidity": 5.0, "moisture": 5.0, "illuminance": 20.0}
+        if old_band == new_band and (numeric_delta is None or abs(numeric_delta) < thresholds.get(kind, float("inf"))):
+            return None
+        if numeric_delta is not None:
+            direction = "rising" if numeric_delta > 0 else "falling" if numeric_delta < 0 else "changed"
+        else:
+            direction = "changed"
+        self._trigger_baselines[entity_id] = new_value
+        return {"entity_id": entity_id, "area": area, "area_name": profile.get("area_name") or area,
+                "kind": kind, "direction": direction, "old_band": old_band, "new_band": new_band,
+                "old_value": baseline, "new_value": new_value}
+
+    def _area_environment(self, area: str) -> dict[str, dict[str, Any]]:
+        return {str(profile["entity_id"]): {"value": profile.get("state"), "band": profile.get("normalized_value"),
+                                             "kind": profile.get("environmental_kind")}
+                for profile in self.inventory_profiles if profile.get("is_environmental") and
+                str(profile.get("area_id") or "") == area and
+                str(profile.get("state", "")).lower() not in {"unknown", "unavailable"}}
 
     @staticmethod
     def _is_context_trigger(profile: dict[str, Any]) -> bool:
@@ -429,5 +517,6 @@ class HausieAIService:
                 "log_level": self.settings.log_level,
             },
             "stats": self.store.stats(),
+            "learning_methods": ["exact", "event", "adaptive_seasonal"],
             "last_cloud_error": self.last_cloud_error,
         }

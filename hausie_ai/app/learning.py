@@ -49,6 +49,7 @@ def current_context(
             occupied = True
     context = {
         "weekday": now.weekday(),
+        "month": now.month,
         "hour_bucket": now.hour * 4 + now.minute // 15,
         "occupancy": "occupied" if occupied else "unknown",
     }

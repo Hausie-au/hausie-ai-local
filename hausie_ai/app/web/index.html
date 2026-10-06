@@ -19,12 +19,14 @@
       <a href="ui/inventory" data-nav="inventory">What Hausie AI can see</a>
       <a href="ui/activity" data-nav="activity">Environmental activity</a>
       <a href="ui/decisions" data-nav="decisions">Decisions</a>
+      <a href="ui/learning" data-nav="learning">Learning methods</a>
     </nav>
     <p id="error" class="error" role="alert" hidden></p>
 
     <main id="overview" hidden>
       <div class="intro"><h2>Overview</h2><p>A quick look at what Hausie AI observes and learns locally.</p></div>
       <div id="summary" class="metrics"></div>
+      <p><a class="feature-link" href="ui/learning">Compare learning methods →</a></p>
       <div class="card-grid">
         <a class="feature" href="ui/inventory"><span class="feature-icon">◎</span><h3>What Hausie AI can see</h3><p>Browse devices, sensors, automations and action targets.</p><span class="feature-link">Open inventory →</span></a>
         <a class="feature" href="ui/activity"><span class="feature-icon">◷</span><h3>Environmental activity</h3><p>See sensor and occupancy changes recorded locally.</p><span class="feature-link">View activity →</span></a>
@@ -69,7 +71,20 @@
 
     <main id="decisions" hidden>
       <div class="intro"><h2>Recent decisions</h2><p>Review why Hausie AI suggested an action or chose to do nothing.</p></div>
-      <div class="table-wrap"><table><thead><tr><th>When</th><th>Decision</th><th>Action</th><th>Why</th></tr></thead><tbody id="decisions-table"></tbody></table></div>
+      <p class="muted small">Only rate suggestions you actually saw. An unrated suggestion is not a rejection.</p>
+      <div class="table-wrap"><table><thead><tr><th>When</th><th>Decision</th><th>Action</th><th>Why</th><th>Your feedback</th></tr></thead><tbody id="decisions-table"></tbody></table></div>
+    </main>
+
+    <main id="learning" hidden>
+      <div class="intro"><h2>Learning methods</h2><p>Three methods see the same local changes. Experimental predictions stay in shadow mode and never control devices.</p></div>
+      <p class="notice">A match means the method predicted the first user action within 10 minutes in the same area. It does not prove the suggestion would have been accepted. Unlabelled opportunities are not counted as mistakes.</p>
+      <div id="learning-summary" class="metrics"></div>
+      <div class="table-wrap"><table><thead><tr><th>Method</th><th>Opportunities</th><th>Predicted</th><th>With user action</th><th>Matched</th><th>Different action</th></tr></thead><tbody id="learning-methods"></tbody></table></div>
+      <h3 class="section-title">Recent event predictions</h3>
+      <div class="table-wrap"><table><thead><tr><th>When / stimulus</th><th>Method</th><th>Prediction</th><th>User action</th><th>Why</th></tr></thead><tbody id="learning-predictions"></tbody></table></div>
+      <h3 class="section-title">Observed after-effects</h3>
+      <p class="muted small">Sensor values before a manual action and about 30 minutes later. Other actions and outside conditions can also change readings; this is not evidence of cause.</p>
+      <div class="table-wrap"><table><thead><tr><th>When / area</th><th>User action</th><th>Before → after</th><th>Other user actions</th></tr></thead><tbody id="learning-outcomes"></tbody></table></div>
     </main>
 
     <footer><a href="docs">API documentation</a><span aria-hidden="true">·</span><a href="api/v1/status">Status JSON</a><span class="muted">Hausie AI __VERSION__ · Data stays local</span></footer>

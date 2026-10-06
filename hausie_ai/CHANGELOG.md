@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0
+
+- Add event-based and adaptive/seasonal shadow learners alongside the exact
+  baseline, with pre-action predictions and local comparison metrics.
+- Capture same-area user-action episodes after significant environmental or
+  presence changes; automation-origin actions are not preference labels.
+- Add a Learning methods Ingress page, explicit suggestion feedback controls,
+  and observational 30-minute before/after sensor readings.
+- Preserve the original baseline action path and safe default settings.
+
 ## 0.4.0
 
 - Split the Ingress UI into Overview, Inventory, Environmental activity and

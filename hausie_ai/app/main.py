@@ -119,6 +119,18 @@ def decisions(limit: int = 30) -> list[dict[str, Any]]:
     return service.store.recent_decisions(limit)
 
 
+@app.get("/api/v1/learning/comparison")
+def learning_comparison(limit: int = 30) -> dict[str, Any]:
+    """Read-only, local shadow predictions. Unlabelled rows are not failures."""
+    return service.store.shadow_report(limit)
+
+
+@app.get("/api/v1/learning/outcomes")
+def learning_outcomes(limit: int = 30) -> list[dict[str, Any]]:
+    """Observational before/after readings; no causal claims."""
+    return service.store.recent_action_outcomes(limit)
+
+
 @app.post("/api/v1/observe")
 def observe(request: ObserveRequest) -> dict[str, Any]:
     try:
@@ -148,7 +160,7 @@ def feedback(request: FeedbackRequest) -> dict[str, Any]:
 @app.post("/api/v1/decisions/{decision_id}/feedback")
 def decision_feedback(decision_id: int, request: DecisionFeedbackRequest) -> dict[str, Any]:
     if not service.add_decision_feedback(decision_id, request.reward, request.source):
-        raise HTTPException(status_code=404, detail="Decision with an action was not found.")
+        raise HTTPException(status_code=404, detail="Suggestion was not found or has already been rated.")
     return {"ok": True}
 
 
@@ -168,7 +180,7 @@ def ui_asset(name: str) -> FileResponse:
 @app.get("/ui/{page}", response_class=HTMLResponse)
 @app.get("/ui/{page}/", response_class=HTMLResponse)
 def ui_page(page: str, request: Request) -> str:
-    if page not in {"inventory", "activity", "decisions"}:
+    if page not in {"inventory", "activity", "decisions", "learning"}:
         raise HTTPException(status_code=404, detail="Page not found.")
     return render_page(page, request)
 

@@ -216,11 +216,42 @@ async function loadPage() {
     document.getElementById("events").innerHTML = events.map(item => `<tr><td>${escapeHtml(item.created_at)}</td><td>${escapeHtml(item.entity_id)}</td><td>${escapeHtml(item.area_name || "Unassigned")}</td><td>${escapeHtml(item.old_state)} → ${escapeHtml(item.new_state)}</td><td>${escapeHtml(item.normalized_value || "")}</td></tr>`).join("") || '<tr><td colspan="5">No environmental or occupancy changes recorded yet.</td></tr>';
   } else if (pageName === "decisions") {
     const decisions = await getJson("api/v1/decisions?limit=100");
-    document.getElementById("decisions-table").innerHTML = decisions.map(item => `<tr><td>${escapeHtml(item.created_at)}</td><td>${escapeHtml(item.decision)} (${escapeHtml(Number(item.confidence).toFixed(2))})</td><td>${escapeHtml(item.action ? `${item.action.domain}.${item.action.service} ${item.action.entity_id}` : "—")}</td><td>${escapeHtml(item.reason)}</td></tr>`).join("") || '<tr><td colspan="4">No decisions recorded yet.</td></tr>';
+    document.getElementById("decisions-table").innerHTML = decisions.map(item => `<tr><td>${escapeHtml(item.created_at)}</td><td>${escapeHtml(item.decision)} (${escapeHtml(Number(item.confidence).toFixed(2))})</td><td>${escapeHtml(item.action ? `${item.action.domain}.${item.action.service} ${item.action.entity_id}` : "—")}</td><td>${escapeHtml(item.reason)}</td><td>${item.rated ? "Rated" : item.decision === "SUGGEST_ACTION" ? `<button type="button" class="feedback-button" data-decision="${Number(item.id)}" data-reward="1">Helpful</button> <button type="button" class="feedback-button" data-decision="${Number(item.id)}" data-reward="-1">Not helpful</button>` : "—"}</td></tr>`).join("") || '<tr><td colspan="5">No decisions recorded yet.</td></tr>';
+  } else if (pageName === "learning") {
+    const report = await getJson("api/v1/learning/comparison?limit=30");
+    const outcomes = await getJson("api/v1/learning/outcomes?limit=30");
+    const methodNames = {exact: "Exact context (reference)", event: "Event-based", adaptive_seasonal: "Adaptive + seasonal"};
+    const totals = report.methods || [];
+    document.getElementById("learning-summary").innerHTML = [
+      metric(totals[0]?.opportunities ?? 0, "Event opportunities"),
+      metric(totals[0]?.labelled ?? 0, "With a user action"),
+      metric("3", "Methods evaluated locally")
+    ].join("");
+    document.getElementById("learning-methods").innerHTML = totals.map(item => `<tr><td><strong>${escapeHtml(methodNames[item.method] || item.method)}</strong></td><td>${escapeHtml(item.opportunities)}</td><td>${escapeHtml(item.predicted)}</td><td>${escapeHtml(item.labelled)}</td><td>${escapeHtml(item.matched)}</td><td>${escapeHtml(item.disagreed)}</td></tr>`).join("") || '<tr><td colspan="6">Waiting for a significant local context change.</td></tr>';
+    document.getElementById("learning-predictions").innerHTML = (report.recent || []).map(item => `<tr><td>${escapeHtml(item.created_at)}<br><small>${escapeHtml(item.trigger.area_name || item.trigger.area)}: ${escapeHtml(item.trigger.kind)} ${escapeHtml(item.trigger.direction)} (${escapeHtml(item.trigger.old_band)} → ${escapeHtml(item.trigger.new_band)})</small></td><td>${escapeHtml(methodNames[item.method] || item.method)}</td><td>${escapeHtml(item.action ? `${item.action.domain}.${item.action.service} ${item.action.entity_id}` : "No prediction")}</td><td>${escapeHtml(item.actual_action ? `${item.actual_action.domain}.${item.actual_action.service} ${item.actual_action.entity_id}` : "Not observed")}</td><td>${escapeHtml(item.reason)}</td></tr>`).join("") || '<tr><td colspan="5">No event predictions yet.</td></tr>';
+    document.getElementById("learning-outcomes").innerHTML = outcomes.map(item => {
+      const before = item.before || {};
+      const after = item.after || {};
+      const readings = Object.keys(before).slice(0, 12).map(entity => `<div><small>${escapeHtml(entity)}:</small> ${escapeHtml(before[entity].value)} → ${escapeHtml(after[entity]?.value ?? "pending")}</div>`).join("");
+      return `<tr><td>${escapeHtml(item.created_at)}<br><small>${escapeHtml(item.area)}</small></td><td>${escapeHtml(`${item.action.domain}.${item.action.service} ${item.action.entity_id}`)}</td><td>${readings || "No area sensors"}</td><td>${item.after ? escapeHtml(item.other_user_actions) : "Pending 30-minute window"}</td></tr>`;
+    }).join("") || '<tr><td colspan="4">No manual actions with an assigned area yet.</td></tr>';
   }
   document.getElementById("error").hidden = true;
 }
 
 if (pageName === "inventory") prepareInventoryControls();
+if (pageName === "decisions") document.getElementById("decisions-table").addEventListener("click", async event => {
+  const button = event.target.closest("button[data-decision]");
+  if (!button) return;
+  button.disabled = true;
+  try {
+    const response = await fetch(`api/v1/decisions/${Number(button.dataset.decision)}/feedback`, {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({reward: Number(button.dataset.reward), source: "explicit_user_feedback"})
+    });
+    if (!response.ok) throw new Error(`Feedback: HTTP ${response.status}`);
+    await loadPage();
+  } catch (error) { button.disabled = false; showError(error); }
+});
 loadPage().catch(showError);
 setInterval(() => loadPage().catch(showError), pageName === "inventory" ? 30000 : 15000);
