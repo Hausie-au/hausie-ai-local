@@ -35,6 +35,10 @@ class DecisionFeedbackRequest(BaseModel):
     source: str = Field(default="explicit_user_feedback", max_length=80)
 
 
+class AnomalyFeedbackRequest(BaseModel):
+    surprising: bool
+
+
 settings = Settings.from_environment()
 service = HausieAIService(settings)
 
@@ -129,6 +133,19 @@ def learning_comparison(limit: int = 30) -> dict[str, Any]:
 def learning_outcomes(limit: int = 30) -> list[dict[str, Any]]:
     """Observational before/after readings; no causal claims."""
     return service.store.recent_action_outcomes(limit)
+
+
+@app.get("/api/v1/learning/lab")
+def learning_lab() -> dict[str, Any]:
+    """The complete local model catalog and family-specific evaluations."""
+    return service.lab.report()
+
+
+@app.post("/api/v1/learning/anomalies/{anomaly_id}/feedback")
+def anomaly_feedback(anomaly_id: int, request: AnomalyFeedbackRequest) -> dict[str, Any]:
+    if not service.lab_store.rate_anomaly(anomaly_id, request.surprising):
+        raise HTTPException(status_code=404, detail="Anomaly not found, not scorable, or already reviewed.")
+    return {"ok": True}
 
 
 @app.post("/api/v1/observe")

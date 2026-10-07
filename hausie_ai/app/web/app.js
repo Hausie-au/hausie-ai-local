@@ -11,6 +11,7 @@ const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, character =>
 const label = value => String(value ?? "").replaceAll("_", " ");
 const metric = (value, title) => `<div class="metric"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(title)}</span></div>`;
 const roles = values => (values || []).map(value => `<span class="tag">${escapeHtml(label(value))}</span>`).join("");
+const decimal = value => value == null ? "Pending" : Number(value).toFixed(2);
 
 async function getJson(path) {
   const response = await fetch(path, {cache: "no-store"});
@@ -156,7 +157,12 @@ function renderInventory() {
     const filtering = [...document.querySelectorAll(".filters select, .filters input, #inventory-search")].some(control => control.value);
     results.innerHTML = `<div class="empty">${filtering ? "No matching items in this category." : "No items in this category yet."}</div>`;
   } else if (currentView === "devices") {
-    results.innerHTML = `<div class="device-list">${visible.map(device => `<details class="device"><summary><span><strong>${escapeHtml(device.name)}</strong><small>${escapeHtml(device.area)} · ${device.entities.length} entities</small></span></summary>${entityTable(device.entities)}</details>`).join("")}</div>`;
+    results.innerHTML = `<div class="device-list">${visible.map(device => {
+      const input = device.entities.some(entity => (entity.roles || []).some(role => role === "environmental_input" || role === "context_input"));
+      const action = device.entities.some(entity => (entity.roles || []).includes("safe_action_target"));
+      const role = input && action ? "Input + action" : input ? "Input" : action ? "Action target" : "Observed only";
+      return `<details class="device"><summary><span><strong>${escapeHtml(device.name)}</strong><small>${escapeHtml(device.area)} · ${device.entities.length} entities · ${escapeHtml(role)}</small></span></summary>${entityTable(device.entities)}</details>`;
+    }).join("")}</div>`;
   } else {
     results.innerHTML = entityTable(visible);
   }
@@ -218,16 +224,20 @@ async function loadPage() {
     const decisions = await getJson("api/v1/decisions?limit=100");
     document.getElementById("decisions-table").innerHTML = decisions.map(item => `<tr><td>${escapeHtml(item.created_at)}</td><td>${escapeHtml(item.decision)} (${escapeHtml(Number(item.confidence).toFixed(2))})</td><td>${escapeHtml(item.action ? `${item.action.domain}.${item.action.service} ${item.action.entity_id}` : "—")}</td><td>${escapeHtml(item.reason)}</td><td>${item.rated ? "Rated" : item.decision === "SUGGEST_ACTION" ? `<button type="button" class="feedback-button" data-decision="${Number(item.id)}" data-reward="1">Helpful</button> <button type="button" class="feedback-button" data-decision="${Number(item.id)}" data-reward="-1">Not helpful</button>` : "—"}</td></tr>`).join("") || '<tr><td colspan="5">No decisions recorded yet.</td></tr>';
   } else if (pageName === "learning") {
-    const report = await getJson("api/v1/learning/comparison?limit=30");
+    const lab = await getJson("api/v1/learning/lab");
     const outcomes = await getJson("api/v1/learning/outcomes?limit=30");
-    const methodNames = {exact: "Exact context (reference)", event: "Event-based", adaptive_seasonal: "Adaptive + seasonal"};
+    const report = lab.actions;
+    const methodNames = Object.fromEntries(lab.catalog.map(item => [item.id, item.name]));
     const totals = report.methods || [];
     document.getElementById("learning-summary").innerHTML = [
       metric(totals[0]?.opportunities ?? 0, "Event opportunities"),
       metric(totals[0]?.labelled ?? 0, "With a user action"),
-      metric("3", "Methods evaluated locally")
+      metric(lab.catalog.length, "Methods available locally")
     ].join("");
-    document.getElementById("learning-methods").innerHTML = totals.map(item => `<tr><td><strong>${escapeHtml(methodNames[item.method] || item.method)}</strong></td><td>${escapeHtml(item.opportunities)}</td><td>${escapeHtml(item.predicted)}</td><td>${escapeHtml(item.labelled)}</td><td>${escapeHtml(item.matched)}</td><td>${escapeHtml(item.disagreed)}</td></tr>`).join("") || '<tr><td colspan="6">Waiting for a significant local context change.</td></tr>';
+    document.getElementById("learning-methods").innerHTML = lab.catalog.filter(item => item.family === "actions").map(item => {
+      const row = totals.find(value => value.method === item.id) || {};
+      return `<tr><td><strong>${escapeHtml(item.name)}</strong><br><small>${escapeHtml(item.status)}</small></td><td>${escapeHtml(row.opportunities ?? 0)}</td><td>${escapeHtml(row.predicted ?? 0)}</td><td>${escapeHtml(row.labelled ?? 0)}</td><td>${escapeHtml(row.matched ?? 0)}</td><td>${escapeHtml(row.disagreed ?? 0)}</td></tr>`;
+    }).join("");
     document.getElementById("learning-predictions").innerHTML = (report.recent || []).map(item => `<tr><td>${escapeHtml(item.created_at)}<br><small>${escapeHtml(item.trigger.area_name || item.trigger.area)}: ${escapeHtml(item.trigger.kind)} ${escapeHtml(item.trigger.direction)} (${escapeHtml(item.trigger.old_band)} → ${escapeHtml(item.trigger.new_band)})</small></td><td>${escapeHtml(methodNames[item.method] || item.method)}</td><td>${escapeHtml(item.action ? `${item.action.domain}.${item.action.service} ${item.action.entity_id}` : "No prediction")}</td><td>${escapeHtml(item.actual_action ? `${item.actual_action.domain}.${item.actual_action.service} ${item.actual_action.entity_id}` : "Not observed")}</td><td>${escapeHtml(item.reason)}</td></tr>`).join("") || '<tr><td colspan="5">No event predictions yet.</td></tr>';
     document.getElementById("learning-outcomes").innerHTML = outcomes.map(item => {
       const before = item.before || {};
@@ -235,11 +245,61 @@ async function loadPage() {
       const readings = Object.keys(before).slice(0, 12).map(entity => `<div><small>${escapeHtml(entity)}:</small> ${escapeHtml(before[entity].value)} → ${escapeHtml(after[entity]?.value ?? "pending")}</div>`).join("");
       return `<tr><td>${escapeHtml(item.created_at)}<br><small>${escapeHtml(item.area)}</small></td><td>${escapeHtml(`${item.action.domain}.${item.action.service} ${item.action.entity_id}`)}</td><td>${readings || "No area sensors"}</td><td>${item.after ? escapeHtml(item.other_user_actions) : "Pending 30-minute window"}</td></tr>`;
     }).join("") || '<tr><td colspan="4">No manual actions with an assigned area yet.</td></tr>';
+    document.getElementById("learning-sensors").innerHTML = lab.sensors.map(item => `<tr><td>${escapeHtml(methodNames[item.method] || item.method)}</td><td>${escapeHtml(item.kind)} ${escapeHtml(item.unit)}</td><td>${escapeHtml(item.opportunities)}</td><td>${escapeHtml(item.evaluated)}</td><td>${escapeHtml(decimal(item.mean_absolute_error))}</td></tr>`).join("") || '<tr><td colspan="5">Waiting for numeric temperature, humidity or illuminance changes.</td></tr>';
+    document.getElementById("learning-responses").innerHTML = lab.responses.map(item => `<tr><td>${escapeHtml(methodNames[item.method] || item.method)}</td><td>${escapeHtml(item.entity_id)}</td><td>${escapeHtml(item.predictions)}</td><td>${escapeHtml(item.evaluated)}</td><td>${escapeHtml(decimal(item.mean_absolute_error))}</td></tr>`).join("") || '<tr><td colspan="5">Waiting for repeated manual actions with area sensors.</td></tr>';
+    document.getElementById("learning-preferences").innerHTML = [
+      metric(lab.preferences.predictions, "Predicted suggestions"),
+      metric(lab.preferences.evaluated, "Explicitly rated"),
+      metric(decimal(lab.preferences.brier_score), "Brier score")
+    ].join("");
+    const anomaly = lab.anomalies.summary;
+    document.getElementById("learning-anomaly-summary").innerHTML = [
+      metric(anomaly.opportunities, "Changes seen"), metric(anomaly.scored, "Scored"),
+      metric(anomaly.flagged ?? 0, "Flagged"), metric(anomaly.reviewed, "Reviewed"),
+      metric(anomaly.agreed ?? 0, "Agreed with your review")
+    ].join("");
+    document.getElementById("learning-anomalies").innerHTML = lab.anomalies.recent.map(item => `<tr><td>${escapeHtml(item.created_at)}</td><td>${escapeHtml(item.entity_id)}</td><td>${escapeHtml(decimal(item.score))}</td><td>${escapeHtml(item.explanation)}</td><td>${item.reviewed == null ? `<button type="button" class="feedback-button" data-anomaly="${Number(item.id)}" data-surprising="1">Surprising</button> <button type="button" class="feedback-button" data-anomaly="${Number(item.id)}" data-surprising="0">Expected</button>` : item.reviewed ? "Surprising" : "Expected"}</td></tr>`).join("") || '<tr><td colspan="5">No unusual changes flagged yet.</td></tr>';
   }
   document.getElementById("error").hidden = true;
 }
 
 if (pageName === "inventory") prepareInventoryControls();
+if (pageName === "learning") {
+  const families = new Set(["actions", "sensors", "responses", "preferences", "anomalies"]);
+  const selectFamily = family => {
+    document.querySelectorAll("#learning-tabs button").forEach(button => {
+      const selected = button.dataset.family === family;
+      button.classList.toggle("active", selected);
+      button.setAttribute("aria-pressed", String(selected));
+    });
+    document.querySelectorAll("[data-learning-family]").forEach(section => {
+      section.hidden = section.dataset.learningFamily !== family;
+    });
+  };
+  const selected = new URLSearchParams(location.search).get("family");
+  selectFamily(families.has(selected) ? selected : "actions");
+  document.getElementById("learning-tabs").addEventListener("click", event => {
+    const button = event.target.closest("button[data-family]");
+    if (!button) return;
+    selectFamily(button.dataset.family);
+    const url = new URL(location.href);
+    url.searchParams.set("family", button.dataset.family);
+    history.replaceState(null, "", url);
+  });
+  document.getElementById("learning-anomalies").addEventListener("click", async event => {
+    const button = event.target.closest("button[data-anomaly]");
+    if (!button) return;
+    button.disabled = true;
+    try {
+      const response = await fetch(`api/v1/learning/anomalies/${Number(button.dataset.anomaly)}/feedback`, {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({surprising: button.dataset.surprising === "1"})
+      });
+      if (!response.ok) throw new Error(`Anomaly review: HTTP ${response.status}`);
+      await loadPage();
+    } catch (error) { button.disabled = false; showError(error); }
+  });
+}
 if (pageName === "decisions") document.getElementById("decisions-table").addEventListener("click", async event => {
   const button = event.target.closest("button[data-decision]");
   if (!button) return;

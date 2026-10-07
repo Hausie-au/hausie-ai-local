@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0
+
+- Add 12 observational methods to the existing three, for 15 local models
+  across action, sensor, response, preference and anomaly tasks.
+- Add additive persistent SQLite histories and pre-outcome evaluation for
+  numeric 30-minute sensor forecasts, observed response deltas and explicit
+  feedback probabilities.
+- Add five Learning methods tabs with separate, unit-aware metrics and manual
+  anomaly reviews. Keep the original decision path and safe defaults unchanged.
+- Keep all new methods in shadow mode; no automatic model promotion.
+
 ## 0.5.1
 
 - Align the Dockerfile's default build version with the add-on version.

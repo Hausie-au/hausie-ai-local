@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from time import monotonic
 from typing import Any
 
@@ -11,12 +12,14 @@ from .events import HomeAssistantEventStream
 from .experiments import RELEVANT_KINDS, ShadowLearners
 from .ha import HomeAssistantClient
 from .inventory import InventoryBuilder, normalize_environmental_value
+from .lab import CATALOG, ModelLab
+from .lab_storage import LabStore
 from .learning import Learner, current_context
 from .safety import SafetyPolicy
 from .settings import Settings
 from .storage import Store
 
-ADDON_VERSION = "0.5.1"
+ADDON_VERSION = "0.6.0"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -93,6 +96,8 @@ class HausieAIService:
         self.store = Store(settings.data_dir)
         self.learner = Learner(self.store, settings.min_observations, settings.min_confidence)
         self.shadow_learners = ShadowLearners(self.store, self.learner, settings.min_observations, settings.min_confidence)
+        self.lab_store = LabStore(self.store)
+        self.lab = ModelLab(self.lab_store, self.shadow_learners, settings.min_observations, settings.min_confidence)
         self.safety = SafetyPolicy()
         self.inventory_builder = InventoryBuilder(self.safety)
         self.ha = HomeAssistantClient(settings.ha_url, settings.ha_token)
@@ -198,8 +203,14 @@ class HausieAIService:
         self.store.replace_inventory(self.inventory_profiles)
         self.store.add_snapshot(states)
         for pending in self.store.pending_action_outcomes():
-            if self.store.finish_action_outcome(pending["id"], self._area_environment(pending["area"])):
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(pending["created_at"])).total_seconds()
+            after = self._area_environment(pending["area"]) if age <= 2700 else {}
+            if self.store.finish_action_outcome(pending["id"], after):
+                self.lab_store.label_outcome_predictions(pending["id"])
                 LOGGER.info("OUTCOME id=%s area=%s window=30m observational_only=true", pending["id"], pending["area"])
+        completed_forecasts = self.lab.finish_forecasts(self.inventory_profiles)
+        if completed_forecasts:
+            LOGGER.info("SENSOR_FORECAST evaluated=%s window=30m", completed_forecasts)
         inventory_summary = self.inventory_builder.summary(self.inventory_profiles)
         LOGGER.info(
             "SNAPSHOT entities=%s observations=%s environmental=%s context_inputs=%s safe_targets=%s",
@@ -237,7 +248,11 @@ class HausieAIService:
             if source == "user":
                 area = self.inventory_by_entity.get(entity_id, {}).get("area_id")
                 if area:
-                    outcome_id = self.store.start_action_outcome(str(area), action, self._area_environment(str(area)))
+                    before = self._area_environment(str(area))
+                    outcome_id = self.store.start_action_outcome(str(area), action, before)
+                    response_predictions = self.lab.predict_response(outcome_id, str(area), action, before)
+                    action_id = self.lab.observe_manual_action(str(area), action, context_before)
+                    LOGGER.info("LAB manual_action_id=%s area=%s response_predictions=%s", action_id, area, response_predictions)
                     LOGGER.info("OUTCOME id=%s area=%s status=pending window=30m", outcome_id, area)
 
         self.state_index[entity_id] = new_state
@@ -246,16 +261,23 @@ class HausieAIService:
         self.inventory_by_entity[entity_id] = profile
         self.inventory_profiles = sorted(self.inventory_by_entity.values(), key=lambda item: item["entity_id"])
         if old_value != new_value and (profile["is_environmental"] or profile["is_context_input"]):
+            forecasts = self.lab.forecast_sensor(profile)
+            trigger = self._significant_trigger(profile, old_value, new_value)
+            if trigger:
+                trigger = self.lab.enrich_trigger(trigger)
+                anomaly_id = self.lab.detect_anomaly(trigger)
+                LOGGER.info("LAB anomaly_id=%s entity=%s", anomaly_id, entity_id)
             event_id = self.store.add_environmental_event(profile, old_value, new_value)
             LOGGER.info(
                 "ENVIRONMENT event_id=%s entity=%s kind=%s area=%s state=%s->%s band=%s used_in_context=%s",
                 event_id, entity_id, profile.get("environmental_kind"), profile.get("area_name") or "unassigned",
                 old_value, new_value, profile.get("normalized_value"), profile["is_environmental"],
             )
-            trigger = self._significant_trigger(profile, old_value, new_value)
+            if forecasts:
+                LOGGER.info("LAB sensor_forecasts entity=%s predictions=%s", entity_id, forecasts)
             if trigger:
                 context_after = self.current_context()
-                predictions = self.shadow_learners.predict(context_after, trigger)
+                predictions = self.lab.predict_actions(context_after, trigger)
                 for prediction in predictions.values():
                     candidate_action = prediction["action"]
                     if candidate_action and (not self.safety.evaluate(candidate_action).allowed or
@@ -450,6 +472,7 @@ class HausieAIService:
         if should_execute and self._is_cooling_down(candidate.action):
             reason = f"Action cooldown is active for {candidate.action['entity_id']}."
             decision_id = self.store.add_decision(context, candidate.action, candidate.confidence, "SUGGEST_ACTION", reason, False)
+            self.lab.predict_preference(decision_id, candidate.action)
             return {"decision_id": decision_id, "decision": "SUGGEST_ACTION", "action": candidate.action, "confidence": candidate.confidence, "reason": reason, "executed": False}
 
         if should_execute:
@@ -457,6 +480,8 @@ class HausieAIService:
         decision = "ACTION" if should_execute else "SUGGEST_ACTION"
         reason = f"{reason} {safety.reason}"
         decision_id = self.store.add_decision(context, candidate.action, candidate.confidence, decision, reason, should_execute)
+        if decision == "SUGGEST_ACTION":
+            self.lab.predict_preference(decision_id, candidate.action)
         if should_execute:
             self._remember_execution(decision_id, candidate.action)
         return {
@@ -483,6 +508,8 @@ class HausieAIService:
     def add_decision_feedback(self, decision_id: int, reward: float, source: str) -> bool:
         accepted = self.store.add_decision_feedback(decision_id, reward, source)
         if accepted:
+            if source == "explicit_user_feedback":
+                self.lab_store.label_preference_prediction(decision_id, reward > 0)
             LOGGER.info("FEEDBACK decision_id=%s reward=%s source=%s", decision_id, reward, source)
         return accepted
 
@@ -517,6 +544,6 @@ class HausieAIService:
                 "log_level": self.settings.log_level,
             },
             "stats": self.store.stats(),
-            "learning_methods": ["exact", "event", "adaptive_seasonal"],
+            "learning_methods": [item["id"] for item in CATALOG],
             "last_cloud_error": self.last_cloud_error,
         }

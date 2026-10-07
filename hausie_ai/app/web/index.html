@@ -76,15 +76,46 @@
     </main>
 
     <main id="learning" hidden>
-      <div class="intro"><h2>Learning methods</h2><p>Three methods see the same local changes. Experimental predictions stay in shadow mode and never control devices.</p></div>
-      <p class="notice">A match means the method predicted the first user action within 10 minutes in the same area. It does not prove the suggestion would have been accepted. Unlabelled opportunities are not counted as mistakes.</p>
+      <div class="intro"><h2>Learning methods</h2><p>Fifteen local experiments test different questions about your home. Only the original exact-context learner can feed suggestions; all new methods are observation-only.</p></div>
+      <p class="notice">Scores from different tasks are not directly comparable. A matching action within 10 minutes is not proof that you wanted a suggestion. Missing labels are not counted as mistakes. Sensor and response predictions are observational, not proof of cause.</p>
       <div id="learning-summary" class="metrics"></div>
-      <div class="table-wrap"><table><thead><tr><th>Method</th><th>Opportunities</th><th>Predicted</th><th>With user action</th><th>Matched</th><th>Different action</th></tr></thead><tbody id="learning-methods"></tbody></table></div>
-      <h3 class="section-title">Recent event predictions</h3>
-      <div class="table-wrap"><table><thead><tr><th>When / stimulus</th><th>Method</th><th>Prediction</th><th>User action</th><th>Why</th></tr></thead><tbody id="learning-predictions"></tbody></table></div>
-      <h3 class="section-title">Observed after-effects</h3>
-      <p class="muted small">Sensor values before a manual action and about 30 minutes later. Other actions and outside conditions can also change readings; this is not evidence of cause.</p>
-      <div class="table-wrap"><table><thead><tr><th>When / area</th><th>User action</th><th>Before → after</th><th>Other user actions</th></tr></thead><tbody id="learning-outcomes"></tbody></table></div>
+      <nav id="learning-tabs" class="tabs" aria-label="Learning experiment families">
+        <button type="button" data-family="actions">Actions (8)</button>
+        <button type="button" data-family="sensors">Sensors (3)</button>
+        <button type="button" data-family="responses">Responses (2)</button>
+        <button type="button" data-family="preferences">Preferences (1)</button>
+        <button type="button" data-family="anomalies">Anomalies (1)</button>
+      </nav>
+      <section data-learning-family="actions">
+        <h3 class="section-title">Which manual action follows a local change?</h3>
+        <p class="muted small">All eight predictors see the same significant area event. Only the first user action within ten minutes labels it. Coverage and matches are separate.</p>
+        <div class="table-wrap"><table><thead><tr><th>Method</th><th>Opportunities</th><th>Predicted</th><th>With user action</th><th>Matched</th><th>Different action</th></tr></thead><tbody id="learning-methods"></tbody></table></div>
+        <h3 class="section-title">Recent event predictions</h3>
+        <div class="table-wrap"><table><thead><tr><th>When / stimulus</th><th>Method</th><th>Prediction</th><th>User action</th><th>Why</th></tr></thead><tbody id="learning-predictions"></tbody></table></div>
+      </section>
+      <section data-learning-family="sensors" hidden>
+        <h3 class="section-title">What will a sensor read in about 30 minutes?</h3>
+        <p class="muted small">Mean absolute error (MAE) is shown separately by sensor type and unit. Lower is better only when comparing the same type and unit. Missing readings do not count as errors.</p>
+        <div class="table-wrap"><table><thead><tr><th>Method</th><th>Sensor type / unit</th><th>Predictions</th><th>Evaluated</th><th>MAE</th></tr></thead><tbody id="learning-sensors"></tbody></table></div>
+      </section>
+      <section data-learning-family="responses" hidden>
+        <h3 class="section-title">How did sensors change after a manual action?</h3>
+        <p class="muted small">Only 30-minute windows without another known user action are evaluated. Weather, automations and other factors can still affect the result; this is not a causal effect estimate. MAE is per sensor.</p>
+        <div class="table-wrap"><table><thead><tr><th>Method</th><th>Sensor</th><th>Predictions</th><th>Evaluated</th><th>MAE</th></tr></thead><tbody id="learning-responses"></tbody></table></div>
+        <h3 class="section-title">Observed before and after</h3>
+        <div class="table-wrap"><table><thead><tr><th>When / area</th><th>User action</th><th>Before → after</th><th>Other user actions</th></tr></thead><tbody id="learning-outcomes"></tbody></table></div>
+      </section>
+      <section data-learning-family="preferences" hidden>
+        <h3 class="section-title">Was a suggestion helpful?</h3>
+        <p class="muted small">This model uses only explicit Helpful / Not helpful feedback. Brier score measures probability error from 0 (best) to 1; it appears only after rated predictions.</p>
+        <div id="learning-preferences" class="metrics"></div>
+      </section>
+      <section data-learning-family="anomalies" hidden>
+        <h3 class="section-title">Was this sensor change unusual?</h3>
+        <p class="muted small">A robust comparison with earlier changes flags unusual size, not necessarily a fault. Review flagged changes to measure usefulness; unreviewed flags are not errors.</p>
+        <div id="learning-anomaly-summary" class="metrics"></div>
+        <div class="table-wrap"><table><thead><tr><th>When</th><th>Sensor</th><th>Score</th><th>Why</th><th>Your review</th></tr></thead><tbody id="learning-anomalies"></tbody></table></div>
+      </section>
     </main>
 
     <footer><a href="docs">API documentation</a><span aria-hidden="true">·</span><a href="api/v1/status">Status JSON</a><span class="muted">Hausie AI __VERSION__ · Data stays local</span></footer>

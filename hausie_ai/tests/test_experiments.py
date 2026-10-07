@@ -89,7 +89,9 @@ def test_shadow_predictions_are_scored_before_user_action_and_never_execute(tmp_
     assert all(row["matched"] == 0 for row in report["methods"])  # predictions preceded training
     service.handle_state_changed(sensor_event("100", "200"))
     service.handle_state_changed(sensor_event("200", "100"))
-    latest = service.store.shadow_report()["recent"][:3]
+    recent = service.store.shadow_report()["recent"]
+    latest = [row for row in recent if row["id"] == recent[0]["id"]]
+    assert len(latest) == 8
     assert next(row for row in latest if row["method"] == "event")["action"] == ACTION
     assert next(row for row in latest if row["method"] == "adaptive_seasonal")["action"] == ACTION
     assert all(not row["actual_action"] for row in latest)

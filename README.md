@@ -26,13 +26,15 @@ Hausie AI is the local decision layer above it.
   actions made by an identifiable Home Assistant user.
 - Uses a transparent frequency model with minimum-observation and confidence
   thresholds.
-- Evaluates three methods side by side: the original exact-context learner,
-  an event-based learner and an adaptive/seasonal event learner. The latter
-  two run only in shadow mode and cannot call Home Assistant services.
+- Registers 15 local methods across action prediction, sensor forecasting,
+  observed action responses, explicit preference feedback and anomaly detection.
+  The original exact-context learner is the only method that can feed decisions;
+  the other 14 methods never call Home Assistant services.
 - Associates a user action with the latest relevant, same-area stimulus within
   10 minutes. Predictions are saved before the later action trains the models.
 - Records area sensor values before a manual action and approximately 30
-  minutes later as observational evidence, never as proof of causation.
+  minutes later, and scores prior predictions against the later readings.
+  This is observational evidence, never proof of causation.
 - Chooses `DO_NOTHING`, `SUGGEST_ACTION`, or an opt-in `ACTION`.
 - Keeps its SQLite database, snapshots, observations and feedback in the
   app's persistent `/data` volume.
@@ -115,7 +117,7 @@ against which the new methods are compared. No new method is promoted silently.
 When an area sensor changes band or crosses a meaningful cumulative threshold
 (temperature 0.5 C, humidity/moisture 5 points, illuminance 20 lux), or an
 area presence/opening input changes, the add-on creates a local opportunity.
-All three methods predict at that point, before any later user action is
+All action methods predict at that point, before any later user action is
 recorded. If an identifiable user changes a low-risk device in the same area
 within 10 minutes, the latest compatible opportunity is labelled with that
 action. Automation-origin and unknown-origin actions do not label shadow
@@ -142,6 +144,54 @@ area are counted, but weather, automations and unobserved factors may still
 explain the difference. This is inspection-only and does not train an action
 policy. Episodes created before installing 0.5.0 are not backfilled; existing
 SQLite observations remain intact.
+
+### The 15-method local lab (0.6.0)
+
+The Learning methods page has five tabs. Every method makes its prediction
+*before* the later observation or explicit feedback arrives. No new method is
+allowed to execute a Home Assistant service or silently replace the original
+decision policy. The lab is intentionally small and interpretable.
+
+| Task | Method | What it tries |
+| --- | --- | --- |
+| Action | Exact context | Original weekday/time/occupancy/environment frequency reference; only method that can feed suggestions. |
+| Action | Event matching | Match the changed variable, direction and area. |
+| Action | Adaptive seasonal | Event matching with recent and same-season examples weighted more. |
+| Action | Area frequency (no context) | Count manual actions in the same area, ignoring time and ambient readings. Area is retained to avoid mixing rooms. |
+| Action | Hierarchical backoff | Try area + occupancy + event kind, then area + kind, then area. |
+| Action | Nearest experiences | Weight similar past events and contexts instead of requiring an exact match. |
+| Action | Previous action | Estimate the next action from the last manual action in the area (within two hours). |
+| Action | Sensor event sequence | Match the two most recent significant sensor changes in the area. |
+| Sensor | Last value | Assume a temperature, humidity or illuminance sensor stays where it is for 30 minutes. |
+| Sensor | Recent trend | Extrapolate a bounded recent change over 30 minutes. |
+| Sensor | Same-hour history | Use completed readings from the same local clock hour, once enough exist. |
+| Response | Mean observed change | Predict a 30-minute sensor delta from previous clean windows after the same manual action. |
+| Response | Similar starting value | Predict that delta from windows with similar initial readings. |
+| Preference | Explicit feedback | Smooth Helpful / Not helpful ratings into a probability for the same suggested action. |
+| Anomaly | Unusual sensor change | Compare change size with a robust median and median absolute deviation from earlier changes. |
+
+Action methods share the same event opportunities. The first identifiable
+user action in the same area within 10 minutes supplies a label; an unlabelled
+opportunity is *not* scored as a wrong prediction. Predictions from unsafe or
+already-satisfied targets are filtered before saving. Action agreement and
+coverage should be inspected separately; neither is an acceptance rate.
+
+Sensor forecasts are sampled at most once per entity per 30 minutes and are
+evaluated at the first periodic snapshot 30–45 minutes later; stale or missing
+readings remain unevaluated. Mean absolute error is shown separately by sensor
+kind and unit, so temperature and lux are never averaged together. Response
+predictions are evaluated only on completed windows without another known
+user action in the area; their error is shown per sensor. Other automations,
+weather or occupancy may still confound the reading. The preference model
+needs at least two explicit ratings of the same action before it predicts;
+its Brier score is computed only when a later suggestion is explicitly rated.
+The anomaly model needs five earlier numeric changes, then lets you review
+flagged readings as Expected or Surprising. No review is inferred from silence.
+
+All records live in additive SQLite tables under the existing persistent
+`/data` volume; upgrades preserve earlier history. Models that lack evidence
+abstain instead of inventing a result. The lab does not yet rank methods or
+promote a winner; compare methods within the *same* task only.
 
 ## Safety and privacy
 
@@ -186,7 +236,7 @@ This repository is a standalone custom app repository. In Home Assistant:
    open. The Overview links to separate Inventory, Environmental activity and
    Decisions pages.
 
-In version `0.5.0`, **What Hausie AI can see** is a dedicated Inventory page.
+**What Hausie AI can see** is a dedicated Inventory page.
 Browse Home Assistant devices (expand each device for its entities), sensors
 and presence, automations, action targets, other entities or all entities.
 Search and paginate the results, or combine filters for area, domain, state,
@@ -253,10 +303,11 @@ the configured reversal window, Hausie AI records negative decision feedback.
 
 ## API for local inspection and controlled tests
 
-The read-only learning endpoints are `GET /api/v1/learning/comparison` for
-shadow predictions and `GET /api/v1/learning/outcomes` for observational
-before/after sensor readings. Existing observation, decision and feedback
-endpoints remain available.
+The read-only learning endpoints are `GET /api/v1/learning/lab` for all 15
+models, `GET /api/v1/learning/comparison` for action predictions and
+`GET /api/v1/learning/outcomes` for observational before/after sensor
+readings. The anomaly-review endpoint accepts an explicit user judgement.
+Existing observation, decision and feedback endpoints remain available.
 
 The Ingress panel exposes FastAPI documentation at `/docs`. Useful endpoints:
 
@@ -272,6 +323,8 @@ The Ingress panel exposes FastAPI documentation at `/docs`. Useful endpoints:
 - `POST /api/v1/decide` — inspect a decision for a supplied context.
 - `POST /api/v1/feedback` — attach feedback to an observation.
 - `POST /api/v1/decisions/{id}/feedback` — attach feedback to a decision.
+- `POST /api/v1/learning/anomalies/{id}/feedback` — review a scored anomaly
+  with `{"surprising": true}` or `{"surprising": false}`.
 
 The endpoints are intended for local development and Home Assistant Ingress,
 not for exposing a public service.
