@@ -20,6 +20,14 @@ class HomeAssistantClient:
         payload = response.json()
         return payload if isinstance(payload, list) else []
 
+    def get_time_zone(self) -> str:
+        response = self.session.get(f"{self.base_url}/api/config", timeout=10)
+        response.raise_for_status()
+        name = response.json().get("time_zone")
+        if not isinstance(name, str) or not name:
+            raise ValueError("Home Assistant did not provide a valid time_zone.")
+        return name
+
     def call_service(self, action: dict[str, Any]) -> list[dict[str, Any]]:
         domain = action["domain"]
         service = action["service"]

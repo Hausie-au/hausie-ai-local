@@ -1,4 +1,4 @@
-"""Fifteen bounded experiments across five learning tasks.
+"""Thirty-one bounded experiments across seven learning tasks.
 
 The lab produces predictions and scores only. It has no Home Assistant client.
 """
@@ -26,13 +26,29 @@ CATALOG = [
     {"id": "nearest_case", "family": "actions", "name": "Nearest experiences", "status": "shadow"},
     {"id": "markov_action", "family": "actions", "name": "Previous action", "status": "shadow"},
     {"id": "event_sequence", "family": "actions", "name": "Sensor event sequence", "status": "shadow"},
+    {"id": "clock_prior", "family": "actions", "name": "Time-of-day action", "status": "shadow"},
+    {"id": "recency_prior", "family": "actions", "name": "Recent action frequency", "status": "shadow"},
+    {"id": "naive_bayes", "family": "actions", "name": "Probabilistic event features", "status": "shadow"},
     {"id": "sensor_persistence", "family": "sensors", "name": "Last value", "status": "shadow"},
     {"id": "sensor_trend", "family": "sensors", "name": "Recent trend", "status": "shadow"},
     {"id": "sensor_hourly", "family": "sensors", "name": "Same-hour history", "status": "shadow"},
+    {"id": "sensor_rolling_mean", "family": "sensors", "name": "Rolling average", "status": "shadow"},
+    {"id": "sensor_rolling_median", "family": "sensors", "name": "Rolling median", "status": "shadow"},
+    {"id": "sensor_ewma", "family": "sensors", "name": "Recent-value weighted average", "status": "shadow"},
+    {"id": "sensor_multivariate", "family": "sensors", "name": "Nearby multi-sensor situations", "status": "shadow"},
     {"id": "response_mean", "family": "responses", "name": "Mean observed change", "status": "shadow"},
     {"id": "response_nearest", "family": "responses", "name": "Similar starting value", "status": "shadow"},
+    {"id": "response_median", "family": "responses", "name": "Median observed change", "status": "shadow"},
     {"id": "preference_bayes", "family": "preferences", "name": "Explicit feedback", "status": "shadow"},
+    {"id": "preference_recent", "family": "preferences", "name": "Recent explicit feedback", "status": "shadow"},
+    {"id": "preference_context", "family": "preferences", "name": "Occupancy-specific feedback", "status": "shadow"},
     {"id": "anomaly_robust", "family": "anomalies", "name": "Unusual sensor change", "status": "shadow"},
+    {"id": "anomaly_value", "family": "anomalies", "name": "Unusual sensor value", "status": "shadow"},
+    {"id": "anomaly_drift", "family": "anomalies", "name": "Recent-vs-earlier shift", "status": "shadow"},
+    {"id": "timing_area_median", "family": "timing", "name": "Typical action delay in area", "status": "shadow"},
+    {"id": "timing_kind_median", "family": "timing", "name": "Event-specific action delay", "status": "shadow"},
+    {"id": "routine_transition", "family": "routines", "name": "Next sensor-event transition", "status": "shadow"},
+    {"id": "routine_bigram", "family": "routines", "name": "Two-event sequence", "status": "shadow"},
 ]
 ACTION_IDS = tuple(item["id"] for item in CATALOG if item["family"] == "actions")
 
@@ -85,6 +101,7 @@ class ModelLab:
         self.minimum = minimum
         self.confidence = confidence
         self._last_forecast_at: dict[str, float] = {}
+        self.local_zone = datetime.now().astimezone().tzinfo
 
     def enrich_trigger(self, trigger: dict[str, Any]) -> dict[str, Any]:
         earlier = self.store.recent_triggers(str(trigger["area"]), 2)
@@ -144,12 +161,100 @@ class ModelLab:
                 self.minimum, self.confidence, "Same last two sensor changes in this area")
         else:
             result["event_sequence"] = abstain("Need two recent sensor changes in this area.")
+        try:
+            hour = int(context["hour_bucket"])
+            clock_rows = [(row["action"], 1.0) for row in manual
+                          if "hour_bucket" in row["context"] and
+                          min(abs(int(row["context"]["hour_bucket"]) - hour),
+                              96 - abs(int(row["context"]["hour_bucket"]) - hour)) <= 4]
+            result["clock_prior"] = vote(clock_rows, self.minimum, self.confidence,
+                                          "Manual actions in this area within one clock hour")
+        except (KeyError, TypeError, ValueError):
+            result["clock_prior"] = abstain("No valid time bucket to compare.")
+        now = datetime.now(timezone.utc)
+        result["recency_prior"] = vote(
+            [(row["action"], 0.5 ** (max(0, (now - datetime.fromisoformat(row["created_at"])).total_seconds()) / (14 * 86400)))
+             for row in manual], self.minimum, self.confidence,
+            "Same-area actions weighted by a 14-day half-life")
+        result["naive_bayes"] = self._naive_bayes(experiences, context, trigger)
         return result
+
+    def _naive_bayes(self, experiences: list[dict[str, Any]], context: dict[str, Any],
+                     trigger: dict[str, Any]) -> dict[str, Any]:
+        if len(experiences) < self.minimum:
+            return abstain("Need more labelled area events for probabilistic features.")
+        def features(past_context: dict[str, Any], past_trigger: dict[str, Any]) -> tuple[str, ...]:
+            return (str(past_trigger.get("kind", "")), str(past_trigger.get("direction", "")),
+                    str(past_trigger.get("new_band", "")), str(past_context.get("occupancy", "")),
+                    str(past_context.get("month", "")), str(int(past_context.get("hour_bucket", 0)) // 16))
+        target = features(context, trigger)
+        groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in experiences:
+            groups[action_key(row["action"])].append(row)
+        scores: dict[str, float] = {}
+        for key, rows in groups.items():
+            if len(rows) < self.minimum:
+                continue
+            score = math.log((len(rows) + 1) / (len(experiences) + len(groups)))
+            for index, value in enumerate(target):
+                match_count = sum(features(row["context"], row["trigger"])[index] == value for row in rows)
+                score += math.log((match_count + 1) / (len(rows) + 3))
+            scores[key] = score
+        if not scores:
+            return abstain("No action class has enough examples.")
+        best = max(scores, key=scores.get)
+        scale = max(scores.values())
+        denominator = sum(math.exp(value - scale) for value in scores.values())
+        probability = math.exp(scores[best] - scale) / denominator
+        if probability < self.confidence:
+            return abstain(f"Probabilistic action share {probability:.2f} below {self.confidence:.2f}.")
+        return {"action": groups[best][0]["action"], "confidence": round(probability, 3),
+                "reason": f"Smoothed event/time/occupancy features from {len(experiences)} area examples."}
 
     def observe_manual_action(self, area: str, action: dict[str, Any], context: dict[str, Any]) -> int:
         return self.store.add_manual_action(area, action, context)
 
-    def forecast_sensor(self, profile: dict[str, Any]) -> dict[str, float]:
+    def predict_timing(self, opportunity_id: int, trigger: dict[str, Any]) -> dict[str, float | None]:
+        area, kind = str(trigger["area"]), str(trigger["kind"])
+        area_times = self.store.timing_examples(area)
+        kind_times = self.store.timing_examples(area, kind)
+        predictions = {
+            "timing_area_median": median(area_times) if len(area_times) >= self.minimum else None,
+            "timing_kind_median": median(kind_times) if len(kind_times) >= self.minimum else None,
+        }
+        self.store.add_timing_predictions(opportunity_id, area, kind, predictions)
+        return predictions
+
+    def predict_next_event(self, trigger: dict[str, Any]) -> dict[str, str | None]:
+        area = str(trigger["area"])
+        current = signal_token(trigger)
+        previous = self.store.previous_opportunity(area)
+        if previous:
+            self.store.observe_next_event(previous, current)
+        history = self.store.event_transitions(area)
+        sequence = trigger.get("sequence") or []
+        prior = sequence[-2] if len(sequence) >= 2 else None
+
+        def strongest(rows: list[dict[str, Any]]) -> str | None:
+            counts: dict[str, int] = defaultdict(int)
+            for row in rows:
+                counts[row["next_signal"]] += 1
+            if not counts:
+                return None
+            winner = max(counts, key=lambda key: (counts[key], key))
+            return winner if counts[winner] >= self.minimum and counts[winner] / len(rows) >= self.confidence else None
+
+        return {
+            "routine_transition": strongest([row for row in history if row["current_signal"] == current]),
+            "routine_bigram": strongest([row for row in history if row["current_signal"] == current and
+                                           prior is not None and row["previous_signal"] == prior]),
+        }
+
+    def save_next_event_predictions(self, opportunity_id: int, trigger: dict[str, Any],
+                                    predictions: dict[str, str | None]) -> None:
+        self.store.add_routine_predictions(opportunity_id, str(trigger["area"]), predictions)
+
+    def forecast_sensor(self, profile: dict[str, Any], profiles: list[dict[str, Any]] | None = None) -> dict[str, float]:
         entity = str(profile["entity_id"])
         kind = str(profile.get("environmental_kind") or "")
         if kind not in {"temperature", "humidity", "illuminance"}:
@@ -158,7 +263,7 @@ class ModelLab:
         if current is None or monotonic() - self._last_forecast_at.get(entity, -1e10) < 1800:
             return {}
         self._last_forecast_at[entity] = monotonic()
-        target_hour = (datetime.now().astimezone() + timedelta(minutes=30)).hour
+        target_hour = (datetime.now(self.local_zone) + timedelta(minutes=30)).hour
         predictions = {"sensor_persistence": current}
         for previous in self.store.previous_sensor_events(entity):
             previous_value = numeric(previous["new_state"])
@@ -173,7 +278,37 @@ class ModelLab:
         historical = self.store.completed_forecast_values(entity, str(profile.get("unit") or ""), target_hour)
         if len(historical) >= self.minimum:
             predictions["sensor_hourly"] = mean(historical)
-        self.store.add_forecasts(profile, target_hour, current, predictions)
+        values = [current] + self.store.sensor_values(entity, 20)
+        if len(values) >= self.minimum + 1:
+            recent = values[:6]
+            predictions["sensor_rolling_mean"] = mean(recent)
+            predictions["sensor_rolling_median"] = median(recent)
+            weights = [0.6 ** index for index in range(len(recent))]
+            predictions["sensor_ewma"] = sum(value * weight for value, weight in zip(recent, weights)) / sum(weights)
+        area = str(profile.get("area_id") or profile.get("area_name") or "")
+        features = {entity: current}
+        for other in profiles or []:
+            other_area = str(other.get("area_id") or other.get("area_name") or "")
+            if other_area != area or other.get("entity_id") == entity:
+                continue
+            value = numeric(other.get("state"))
+            if value is not None and (other.get("is_environmental") or other.get("is_context_input")):
+                features[str(other["entity_id"])] = value
+            elif str(other.get("state", "")).lower() in {"on", "off"}:
+                features[str(other["entity_id"])] = float(str(other["state"]).lower() == "on")
+        cases = []
+        if len(features) >= 2:
+            for case in self.store.sensor_vectors(entity, str(profile.get("unit") or "")):
+                shared = features.keys() & case["features"].keys()
+                if len(shared) < 2:
+                    continue
+                distance = sum(abs(features[key] - case["features"][key]) /
+                               max(1.0, abs(features[key]), abs(case["features"][key])) for key in shared) / len(shared)
+                cases.append((distance, case["actual"]))
+            cases.sort(key=lambda item: item[0])
+            if len(cases) >= self.minimum:
+                predictions["sensor_multivariate"] = mean(value for _, value in cases[:7])
+        self.store.add_forecasts(profile, target_hour, current, predictions, features)
         return predictions
 
     def finish_forecasts(self, profiles: list[dict[str, Any]]) -> int:
@@ -201,6 +336,7 @@ class ModelLab:
             if len(cases) < self.minimum:
                 continue
             predictions.append((entity_id, "response_mean", mean(delta for _, delta in cases)))
+            predictions.append((entity_id, "response_median", median(delta for _, delta in cases)))
             nearest = sorted(cases, key=lambda item: abs(item[0] - value))[:7]
             predictions.append((entity_id, "response_nearest", mean(delta for _, delta in nearest)))
         self.store.add_outcome_predictions(outcome_id, predictions)
@@ -212,6 +348,16 @@ class ModelLab:
             return None
         probability = (sum(feedback) + 1) / (len(feedback) + 2)
         self.store.add_preference_prediction(decision_id, probability)
+        examples = self.store.feedback_examples(action)
+        weights = [0.8 ** index for index in range(min(30, len(examples)))]
+        predictions = {"preference_recent":
+                       (1 + sum(row["helpful"] * weight for row, weight in zip(examples, weights))) / (2 + sum(weights))}
+        current = self.store.decision_context(decision_id)
+        comparable = [row["helpful"] for row in examples
+                      if row["context"].get("occupancy") == current.get("occupancy")]
+        if len(comparable) >= self.minimum:
+            predictions["preference_context"] = (sum(comparable) + 1) / (len(comparable) + 2)
+        self.store.add_preference_extended(decision_id, predictions)
         return probability
 
     def detect_anomaly(self, trigger: dict[str, Any]) -> int:
@@ -230,9 +376,32 @@ class ModelLab:
             score = abs(abs(new - old) - centre) / max(0.1, 1.4826 * spread, centre * 0.1)
             flagged = score >= 3.5
             reason = f"Change size compared with {len(deltas)} earlier changes; robust score {score:.2f}."
-        return self.store.add_anomaly(trigger, score, flagged, reason)
+        anomaly_id = self.store.add_anomaly(trigger, score, flagged, reason)
+        if new is not None:
+            values = self.store.sensor_values(str(trigger["entity_id"]), 30)
+            value_score = None
+            value_reason = "Need five earlier numeric readings from this sensor."
+            if len(values) >= 5:
+                centre = median(values)
+                spread = median(abs(item - centre) for item in values)
+                value_score = abs(new - centre) / max(0.1, 1.4826 * spread, abs(centre) * 0.01)
+                value_reason = f"Current value versus {len(values)} earlier values; robust score {value_score:.2f}."
+            self.store.add_anomaly(trigger, value_score, value_score is not None and value_score >= 3.5,
+                                   value_reason, "anomaly_value")
+            drift_score = None
+            drift_reason = "Need ten earlier numeric readings to compare recent and earlier windows."
+            if len(values) >= 10:
+                recent = [new] + values[:4]
+                previous = values[4:9]
+                spread = median(abs(item - median(previous)) for item in previous)
+                drift_score = abs(median(recent) - median(previous)) / max(0.1, 1.4826 * spread, abs(median(previous)) * 0.01)
+                drift_reason = f"Recent five readings versus preceding five; shift score {drift_score:.2f}."
+            self.store.add_anomaly(trigger, drift_score, drift_score is not None and drift_score >= 3.0,
+                                   drift_reason, "anomaly_drift")
+        return anomaly_id
 
     def report(self) -> dict[str, Any]:
         return {"catalog": CATALOG, "actions": self.original.store.shadow_report(),
                 "sensors": self.store.forecast_report(), "responses": self.store.outcome_report(),
-                "preferences": self.store.preference_report(), "anomalies": self.store.anomaly_report()}
+                "preferences": self.store.preference_report(), "anomalies": self.store.anomaly_report(),
+                "timing": self.store.timing_report(), "routines": self.store.routine_report()}

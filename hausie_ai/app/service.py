@@ -4,6 +4,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from time import monotonic
 from typing import Any
 
@@ -19,7 +20,7 @@ from .safety import SafetyPolicy
 from .settings import Settings
 from .storage import Store
 
-ADDON_VERSION = "0.6.0"
+ADDON_VERSION = "0.7.0"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -98,6 +99,9 @@ class HausieAIService:
         self.shadow_learners = ShadowLearners(self.store, self.learner, settings.min_observations, settings.min_confidence)
         self.lab_store = LabStore(self.store)
         self.lab = ModelLab(self.lab_store, self.shadow_learners, settings.min_observations, settings.min_confidence)
+        self.home_zone = datetime.now().astimezone().tzinfo
+        self.home_zone_name = str(self.home_zone)
+        self._time_zone_synced = False
         self.safety = SafetyPolicy()
         self.inventory_builder = InventoryBuilder(self.safety)
         self.ha = HomeAssistantClient(settings.ha_url, settings.ha_token)
@@ -150,6 +154,16 @@ class HausieAIService:
         while not self._stop.is_set():
             try:
                 states = await asyncio.to_thread(self.ha.get_states)
+                if not self._time_zone_synced:
+                    try:
+                        zone_name = await asyncio.to_thread(self.ha.get_time_zone)
+                        self.home_zone = await asyncio.to_thread(ZoneInfo, zone_name)
+                        self.lab.local_zone = self.home_zone
+                        self.home_zone_name = zone_name
+                        self._time_zone_synced = True
+                        LOGGER.info("TIMEZONE source=home_assistant zone=%s", zone_name)
+                    except Exception as exc:
+                        LOGGER.warning("TIMEZONE sync_failed fallback=%s error=%s", self.home_zone_name, exc)
                 registry: dict[str, list[dict[str, Any]]] | None = None
                 if not self.registry_snapshot or monotonic() - self._last_registry_sync > 3600:
                     try:
@@ -242,6 +256,7 @@ class HausieAIService:
         if action:
             associated = self._associated_trigger(entity_id, source)
             if associated and self.store.label_shadow_opportunity(associated.opportunity_id, action):
+                self.lab_store.label_timing(associated.opportunity_id)
                 self.store.add_experience(context_before, associated.trigger, action, source)
                 LOGGER.info("EXPERIENCE opportunity_id=%s source=%s trigger=%s action=%s", associated.opportunity_id, source, associated.trigger, action)
             self._learn_from_event(context_before, action, source)
@@ -261,7 +276,7 @@ class HausieAIService:
         self.inventory_by_entity[entity_id] = profile
         self.inventory_profiles = sorted(self.inventory_by_entity.values(), key=lambda item: item["entity_id"])
         if old_value != new_value and (profile["is_environmental"] or profile["is_context_input"]):
-            forecasts = self.lab.forecast_sensor(profile)
+            forecasts = self.lab.forecast_sensor(profile, self.inventory_profiles)
             trigger = self._significant_trigger(profile, old_value, new_value)
             if trigger:
                 trigger = self.lab.enrich_trigger(trigger)
@@ -277,6 +292,7 @@ class HausieAIService:
                 LOGGER.info("LAB sensor_forecasts entity=%s predictions=%s", entity_id, forecasts)
             if trigger:
                 context_after = self.current_context()
+                routine_predictions = self.lab.predict_next_event(trigger)
                 predictions = self.lab.predict_actions(context_after, trigger)
                 for prediction in predictions.values():
                     candidate_action = prediction["action"]
@@ -285,9 +301,13 @@ class HausieAIService:
                                              not self._action_is_needed(candidate_action)):
                         prediction.update(action=None, confidence=0.0, reason="Safety or current state blocks this candidate.")
                 opportunity_id = self.store.add_shadow_opportunity(trigger, context_after, predictions)
+                timing_predictions = self.lab.predict_timing(opportunity_id, trigger)
+                self.lab.save_next_event_predictions(opportunity_id, trigger, routine_predictions)
                 self._recent_triggers.append(RecentTrigger(opportunity_id, trigger, monotonic()))
                 self._recent_triggers = self._recent_triggers[-100:]
                 LOGGER.info("SHADOW opportunity_id=%s trigger=%s predictions=%s", opportunity_id, trigger, predictions)
+                LOGGER.info("LAB opportunity_id=%s timing=%s next_event=%s", opportunity_id,
+                            timing_predictions, routine_predictions)
 
         if self._is_context_trigger(profile):
             context_after = self.current_context()
@@ -514,7 +534,7 @@ class HausieAIService:
         return accepted
 
     def current_context(self) -> dict[str, Any]:
-        return current_context(self.last_states, profiles=self.inventory_profiles)
+        return current_context(self.last_states, now=datetime.now(self.home_zone), profiles=self.inventory_profiles)
 
     def inventory_view(self) -> dict[str, Any]:
         return {
@@ -532,6 +552,7 @@ class HausieAIService:
             "event_stream_enabled": self.settings.event_stream_enabled,
             "last_event_source": self.last_event_source,
             "inventory_registry_available": bool(self.registry_snapshot),
+            "home_time_zone": self.home_zone_name,
             "last_inventory_error": self.last_inventory_error,
             "current_context": self.current_context() if self.last_states else None,
             "settings": {

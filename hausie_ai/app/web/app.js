@@ -229,6 +229,10 @@ async function loadPage() {
     const report = lab.actions;
     const methodNames = Object.fromEntries(lab.catalog.map(item => [item.id, item.name]));
     const totals = report.methods || [];
+    document.querySelectorAll("#learning-tabs button[data-family]").forEach(button => {
+      const count = lab.catalog.filter(item => item.family === button.dataset.family).length;
+      button.textContent = `${label(button.dataset.family)} (${count})`;
+    });
     document.getElementById("learning-summary").innerHTML = [
       metric(totals[0]?.opportunities ?? 0, "Event opportunities"),
       metric(totals[0]?.labelled ?? 0, "With a user action"),
@@ -245,27 +249,48 @@ async function loadPage() {
       const readings = Object.keys(before).slice(0, 12).map(entity => `<div><small>${escapeHtml(entity)}:</small> ${escapeHtml(before[entity].value)} → ${escapeHtml(after[entity]?.value ?? "pending")}</div>`).join("");
       return `<tr><td>${escapeHtml(item.created_at)}<br><small>${escapeHtml(item.area)}</small></td><td>${escapeHtml(`${item.action.domain}.${item.action.service} ${item.action.entity_id}`)}</td><td>${readings || "No area sensors"}</td><td>${item.after ? escapeHtml(item.other_user_actions) : "Pending 30-minute window"}</td></tr>`;
     }).join("") || '<tr><td colspan="4">No manual actions with an assigned area yet.</td></tr>';
-    document.getElementById("learning-sensors").innerHTML = lab.sensors.map(item => `<tr><td>${escapeHtml(methodNames[item.method] || item.method)}</td><td>${escapeHtml(item.kind)} ${escapeHtml(item.unit)}</td><td>${escapeHtml(item.opportunities)}</td><td>${escapeHtml(item.evaluated)}</td><td>${escapeHtml(decimal(item.mean_absolute_error))}</td></tr>`).join("") || '<tr><td colspan="5">Waiting for numeric temperature, humidity or illuminance changes.</td></tr>';
-    document.getElementById("learning-responses").innerHTML = lab.responses.map(item => `<tr><td>${escapeHtml(methodNames[item.method] || item.method)}</td><td>${escapeHtml(item.entity_id)}</td><td>${escapeHtml(item.predictions)}</td><td>${escapeHtml(item.evaluated)}</td><td>${escapeHtml(decimal(item.mean_absolute_error))}</td></tr>`).join("") || '<tr><td colspan="5">Waiting for repeated manual actions with area sensors.</td></tr>';
+    document.getElementById("learning-sensors").innerHTML = lab.catalog.filter(item => item.family === "sensors").flatMap(item => {
+      const rows = lab.sensors.filter(row => row.method === item.id);
+      return (rows.length ? rows : [{method: item.id, kind: "Waiting for data", unit: "", opportunities: 0, evaluated: 0}]);
+    }).map(item => `<tr><td>${escapeHtml(methodNames[item.method] || item.method)}</td><td>${escapeHtml(item.kind)} ${escapeHtml(item.unit)}</td><td>${escapeHtml(item.opportunities)}</td><td>${escapeHtml(item.evaluated)}</td><td>${escapeHtml(decimal(item.mean_absolute_error))}</td></tr>`).join("");
+    document.getElementById("learning-responses").innerHTML = lab.catalog.filter(item => item.family === "responses").flatMap(item => {
+      const rows = lab.responses.filter(row => row.method === item.id);
+      return (rows.length ? rows : [{method: item.id, entity_id: "Waiting for data", predictions: 0, evaluated: 0}]);
+    }).map(item => `<tr><td>${escapeHtml(methodNames[item.method] || item.method)}</td><td>${escapeHtml(item.entity_id)}</td><td>${escapeHtml(item.predictions)}</td><td>${escapeHtml(item.evaluated)}</td><td>${escapeHtml(decimal(item.mean_absolute_error))}</td></tr>`).join("");
     document.getElementById("learning-preferences").innerHTML = [
-      metric(lab.preferences.predictions, "Predicted suggestions"),
-      metric(lab.preferences.evaluated, "Explicitly rated"),
-      metric(decimal(lab.preferences.brier_score), "Brier score")
+      metric(lab.preferences.methods.reduce((sum, row) => sum + row.predictions, 0), "Model predictions"),
+      metric(lab.preferences.methods.reduce((sum, row) => sum + row.evaluated, 0), "Explicit ratings scored")
     ].join("");
+    document.getElementById("learning-preference-methods").innerHTML = lab.catalog.filter(item => item.family === "preferences").map(item => {
+      const row = lab.preferences.methods.find(value => value.method === item.id) || {};
+      return `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(row.predictions ?? 0)}</td><td>${escapeHtml(row.evaluated ?? 0)}</td><td>${escapeHtml(decimal(row.brier_score))}</td></tr>`;
+    }).join("");
     const anomaly = lab.anomalies.summary;
     document.getElementById("learning-anomaly-summary").innerHTML = [
-      metric(anomaly.opportunities, "Changes seen"), metric(anomaly.scored, "Scored"),
+      metric(anomaly.opportunities ?? 0, "Changes seen"), metric(anomaly.scored, "Model scores"),
       metric(anomaly.flagged ?? 0, "Flagged"), metric(anomaly.reviewed, "Reviewed"),
       metric(anomaly.agreed ?? 0, "Agreed with your review")
     ].join("");
-    document.getElementById("learning-anomalies").innerHTML = lab.anomalies.recent.map(item => `<tr><td>${escapeHtml(item.created_at)}</td><td>${escapeHtml(item.entity_id)}</td><td>${escapeHtml(decimal(item.score))}</td><td>${escapeHtml(item.explanation)}</td><td>${item.reviewed == null ? `<button type="button" class="feedback-button" data-anomaly="${Number(item.id)}" data-surprising="1">Surprising</button> <button type="button" class="feedback-button" data-anomaly="${Number(item.id)}" data-surprising="0">Expected</button>` : item.reviewed ? "Surprising" : "Expected"}</td></tr>`).join("") || '<tr><td colspan="5">No unusual changes flagged yet.</td></tr>';
+    document.getElementById("learning-anomaly-methods").innerHTML = lab.catalog.filter(item => item.family === "anomalies").map(item => {
+      const row = lab.anomalies.methods.find(value => value.method === item.id) || {};
+      return `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(row.opportunities ?? 0)}</td><td>${escapeHtml(row.scored ?? 0)}</td><td>${escapeHtml(row.flagged ?? 0)}</td><td>${escapeHtml(row.reviewed ?? 0)}</td><td>${escapeHtml(row.agreed ?? 0)}</td></tr>`;
+    }).join("");
+    document.getElementById("learning-anomalies").innerHTML = lab.anomalies.recent.map(item => `<tr><td>${escapeHtml(item.created_at)}</td><td>${escapeHtml(methodNames[item.method] || item.method)}<br><small>${escapeHtml(item.entity_id)}</small></td><td>${escapeHtml(decimal(item.score))}</td><td>${escapeHtml(item.explanation)}</td><td>${item.reviewed == null ? `<button type="button" class="feedback-button" data-anomaly="${Number(item.id)}" data-surprising="1">Surprising</button> <button type="button" class="feedback-button" data-anomaly="${Number(item.id)}" data-surprising="0">Expected</button>` : item.reviewed ? "Surprising" : "Expected"}</td></tr>`).join("") || '<tr><td colspan="5">No unusual changes flagged yet.</td></tr>';
+    document.getElementById("learning-timing").innerHTML = lab.catalog.filter(item => item.family === "timing").map(item => {
+      const row = lab.timing.find(value => value.method === item.id) || {};
+      return `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(row.opportunities ?? 0)}</td><td>${escapeHtml(row.predicted ?? 0)}</td><td>${escapeHtml(row.labelled ?? 0)}</td><td>${escapeHtml(row.evaluated ?? 0)}</td><td>${escapeHtml(decimal(row.mean_absolute_error_seconds))}</td></tr>`;
+    }).join("");
+    document.getElementById("learning-routines").innerHTML = lab.catalog.filter(item => item.family === "routines").map(item => {
+      const row = lab.routines.find(value => value.method === item.id) || {};
+      return `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(row.opportunities ?? 0)}</td><td>${escapeHtml(row.predicted ?? 0)}</td><td>${escapeHtml(row.labelled ?? 0)}</td><td>${escapeHtml(row.matched ?? 0)}</td><td>${escapeHtml(row.disagreed ?? 0)}</td></tr>`;
+    }).join("");
   }
   document.getElementById("error").hidden = true;
 }
 
 if (pageName === "inventory") prepareInventoryControls();
 if (pageName === "learning") {
-  const families = new Set(["actions", "sensors", "responses", "preferences", "anomalies"]);
+  const families = new Set(["actions", "sensors", "responses", "preferences", "anomalies", "timing", "routines"]);
   const selectFamily = family => {
     document.querySelectorAll("#learning-tabs button").forEach(button => {
       const selected = button.dataset.family === family;
@@ -314,4 +339,4 @@ if (pageName === "decisions") document.getElementById("decisions-table").addEven
   } catch (error) { button.disabled = false; showError(error); }
 });
 loadPage().catch(showError);
-setInterval(() => loadPage().catch(showError), pageName === "inventory" ? 30000 : 15000);
+setInterval(() => loadPage().catch(showError), pageName === "learning" ? 60000 : pageName === "inventory" ? 30000 : 15000);

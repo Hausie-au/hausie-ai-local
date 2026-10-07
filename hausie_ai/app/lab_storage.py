@@ -24,6 +24,7 @@ class LabStore:
                     context_json TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_lab_manual_area ON lab_manual_actions(area, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_environmental_events_entity ON environmental_events(entity_id, id DESC);
                 CREATE TABLE IF NOT EXISTS lab_sensor_forecasts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at TEXT NOT NULL,
@@ -40,6 +41,18 @@ class LabStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_lab_forecasts_pending ON lab_sensor_forecasts(completed_at, created_at);
                 CREATE INDEX IF NOT EXISTS idx_lab_forecasts_history ON lab_sensor_forecasts(entity_id, unit, target_hour, completed_at);
+                CREATE INDEX IF NOT EXISTS idx_lab_forecasts_method ON lab_sensor_forecasts(method, kind, unit);
+                CREATE TABLE IF NOT EXISTS lab_sensor_vectors (
+                    entity_id TEXT NOT NULL,
+                    unit TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    area TEXT NOT NULL,
+                    features_json TEXT NOT NULL,
+                    completed_at TEXT,
+                    actual_value REAL,
+                    PRIMARY KEY (entity_id, unit, created_at)
+                );
+                CREATE INDEX IF NOT EXISTS idx_lab_vectors_history ON lab_sensor_vectors(entity_id, unit, created_at DESC);
                 CREATE TABLE IF NOT EXISTS lab_outcome_predictions (
                     outcome_id INTEGER NOT NULL,
                     entity_id TEXT NOT NULL,
@@ -48,11 +61,20 @@ class LabStore:
                     actual_delta REAL,
                     PRIMARY KEY (outcome_id, entity_id, method)
                 );
+                CREATE INDEX IF NOT EXISTS idx_lab_outcome_method ON lab_outcome_predictions(method, entity_id);
                 CREATE TABLE IF NOT EXISTS lab_preference_predictions (
                     decision_id INTEGER PRIMARY KEY,
                     predicted_helpful REAL NOT NULL,
                     actual_helpful INTEGER
                 );
+                CREATE TABLE IF NOT EXISTS lab_preference_extended (
+                    decision_id INTEGER NOT NULL,
+                    method TEXT NOT NULL,
+                    predicted_helpful REAL NOT NULL,
+                    actual_helpful INTEGER,
+                    PRIMARY KEY (decision_id, method)
+                );
+                CREATE INDEX IF NOT EXISTS idx_lab_preference_method ON lab_preference_extended(method);
                 CREATE TABLE IF NOT EXISTS lab_anomalies (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at TEXT NOT NULL,
@@ -62,10 +84,50 @@ class LabStore:
                     score REAL,
                     flagged INTEGER NOT NULL,
                     explanation TEXT NOT NULL,
-                    reviewed INTEGER
+                    reviewed INTEGER,
+                    method TEXT NOT NULL DEFAULT 'anomaly_robust'
                 );
+                CREATE TABLE IF NOT EXISTS lab_timing_episodes (
+                    opportunity_id INTEGER PRIMARY KEY,
+                    area TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    seconds REAL NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS lab_timing_predictions (
+                    opportunity_id INTEGER NOT NULL,
+                    method TEXT NOT NULL,
+                    area TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    predicted_seconds REAL,
+                    actual_seconds REAL,
+                    PRIMARY KEY (opportunity_id, method)
+                );
+                CREATE INDEX IF NOT EXISTS idx_lab_timing_method ON lab_timing_predictions(method);
+                CREATE TABLE IF NOT EXISTS lab_event_transitions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    area TEXT NOT NULL,
+                    previous_signal TEXT,
+                    current_signal TEXT NOT NULL,
+                    next_signal TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_lab_transitions_area ON lab_event_transitions(area, id DESC);
+                CREATE TABLE IF NOT EXISTS lab_routine_predictions (
+                    opportunity_id INTEGER NOT NULL,
+                    method TEXT NOT NULL,
+                    area TEXT NOT NULL,
+                    predicted_signal TEXT,
+                    actual_signal TEXT,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (opportunity_id, method)
+                );
+                CREATE INDEX IF NOT EXISTS idx_lab_routine_method ON lab_routine_predictions(method);
                 """
             )
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(lab_anomalies)")}
+            if "method" not in columns:
+                connection.execute("ALTER TABLE lab_anomalies ADD COLUMN method TEXT NOT NULL DEFAULT 'anomaly_robust'")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_lab_anomaly_method ON lab_anomalies(method)")
 
     def manual_actions(self, area: str, limit: int = 2000) -> list[dict[str, Any]]:
         with self.store._connect() as connection:
@@ -122,7 +184,27 @@ class LabStore:
             ).fetchall()
         return [float(row["actual_value"]) for row in rows]
 
-    def add_forecasts(self, profile: dict[str, Any], target_hour: int, current: float, predictions: dict[str, float]) -> None:
+    def sensor_values(self, entity_id: str, limit: int = 50) -> list[float]:
+        result = []
+        for row in self.previous_sensor_events(entity_id, limit):
+            try:
+                value = float(row["new_state"])
+                if value == value and abs(value) != float("inf"):
+                    result.append(value)
+            except (TypeError, ValueError):
+                continue
+        return result
+
+    def sensor_vectors(self, entity_id: str, unit: str, limit: int = 300) -> list[dict[str, Any]]:
+        with self.store._connect() as connection:
+            rows = connection.execute(
+                "SELECT features_json, actual_value FROM lab_sensor_vectors WHERE entity_id = ? AND unit = ? AND actual_value IS NOT NULL ORDER BY created_at DESC LIMIT ?",
+                (entity_id, unit, max(1, min(1000, limit))),
+            ).fetchall()
+        return [{"features": json.loads(row["features_json"]), "actual": float(row["actual_value"])} for row in rows]
+
+    def add_forecasts(self, profile: dict[str, Any], target_hour: int, current: float,
+                      predictions: dict[str, float], features: dict[str, float] | None = None) -> None:
         area = str(profile.get("area_id") or profile.get("area_name") or "")
         created_at = utc_now()
         with self.store._lock, self.store._connect() as connection:
@@ -133,6 +215,12 @@ class LabStore:
                   str(profile.get("unit") or ""), target_hour, method, current, value)
                  for method, value in predictions.items()],
             )
+            if features:
+                connection.execute(
+                    "INSERT INTO lab_sensor_vectors(entity_id, unit, created_at, area, features_json) VALUES (?, ?, ?, ?, ?)",
+                    (profile["entity_id"], str(profile.get("unit") or ""), created_at, area,
+                     json.dumps(features, sort_keys=True)),
+                )
 
     def pending_forecasts(self) -> list[dict[str, Any]]:
         with self.store._connect() as connection:
@@ -147,6 +235,13 @@ class LabStore:
             cursor = connection.execute(
                 """UPDATE lab_sensor_forecasts SET completed_at = ?,
                    actual_value = CASE WHEN datetime(created_at) >= datetime('now', '-45 minutes') THEN ? ELSE NULL END
+                   WHERE entity_id = ? AND unit = ? AND completed_at IS NULL
+                   AND datetime(created_at) <= datetime('now', '-30 minutes')""",
+                (utc_now(), actual, entity_id, unit),
+            )
+            connection.execute(
+                """UPDATE lab_sensor_vectors SET completed_at = ?, actual_value = CASE
+                   WHEN datetime(created_at) >= datetime('now', '-45 minutes') THEN ? ELSE NULL END
                    WHERE entity_id = ? AND unit = ? AND completed_at IS NULL
                    AND datetime(created_at) <= datetime('now', '-30 minutes')""",
                 (utc_now(), actual, entity_id, unit),
@@ -216,6 +311,20 @@ class LabStore:
             ).fetchall()
         return [1 if row["reward"] > 0 else 0 for row in rows]
 
+    def feedback_examples(self, action: dict[str, Any]) -> list[dict[str, Any]]:
+        with self.store._connect() as connection:
+            rows = connection.execute(
+                """SELECT f.reward, d.context_json FROM decision_feedback f JOIN decisions d ON d.id = f.decision_id
+                   WHERE f.source = 'explicit_user_feedback' AND d.action_json = ? ORDER BY f.id DESC LIMIT 500""",
+                (json.dumps(action, sort_keys=True),),
+            ).fetchall()
+        return [{"helpful": int(row["reward"] > 0), "context": json.loads(row["context_json"])} for row in rows]
+
+    def decision_context(self, decision_id: int) -> dict[str, Any]:
+        with self.store._connect() as connection:
+            row = connection.execute("SELECT context_json FROM decisions WHERE id = ?", (decision_id,)).fetchone()
+        return json.loads(row["context_json"]) if row else {}
+
     def add_preference_prediction(self, decision_id: int, probability: float) -> None:
         with self.store._lock, self.store._connect() as connection:
             connection.execute(
@@ -229,6 +338,19 @@ class LabStore:
                 "UPDATE lab_preference_predictions SET actual_helpful = ? WHERE decision_id = ? AND actual_helpful IS NULL",
                 (int(helpful), decision_id),
             )
+            connection.execute(
+                "UPDATE lab_preference_extended SET actual_helpful = ? WHERE decision_id = ? AND actual_helpful IS NULL",
+                (int(helpful), decision_id),
+            )
+
+    def add_preference_extended(self, decision_id: int, predictions: dict[str, float]) -> None:
+        if not predictions:
+            return
+        with self.store._lock, self.store._connect() as connection:
+            connection.executemany(
+                "INSERT OR IGNORE INTO lab_preference_extended(decision_id, method, predicted_helpful) VALUES (?, ?, ?)",
+                [(decision_id, method, probability) for method, probability in predictions.items()],
+            )
 
     def preference_report(self) -> dict[str, Any]:
         with self.store._connect() as connection:
@@ -237,14 +359,20 @@ class LabStore:
                    AVG((predicted_helpful - actual_helpful) * (predicted_helpful - actual_helpful)) AS brier_score
                    FROM lab_preference_predictions"""
             ).fetchone()
-        return dict(row)
+            extended = connection.execute(
+                """SELECT method, COUNT(*) AS predictions, COUNT(actual_helpful) AS evaluated,
+                   AVG((predicted_helpful - actual_helpful) * (predicted_helpful - actual_helpful)) AS brier_score
+                   FROM lab_preference_extended GROUP BY method ORDER BY method"""
+            ).fetchall()
+        return dict(row) | {"methods": [{"method": "preference_bayes"} | dict(row)] + [dict(item) for item in extended]}
 
-    def add_anomaly(self, trigger: dict[str, Any], score: float | None, flagged: bool, explanation: str) -> int:
+    def add_anomaly(self, trigger: dict[str, Any], score: float | None, flagged: bool,
+                    explanation: str, method: str = "anomaly_robust") -> int:
         with self.store._lock, self.store._connect() as connection:
             cursor = connection.execute(
-                """INSERT INTO lab_anomalies(created_at, entity_id, area, kind, score, flagged, explanation)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (utc_now(), trigger["entity_id"], trigger["area"], trigger["kind"], score, int(flagged), explanation),
+                """INSERT INTO lab_anomalies(created_at, entity_id, area, kind, score, flagged, explanation, method)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (utc_now(), trigger["entity_id"], trigger["area"], trigger["kind"], score, int(flagged), explanation, method),
             )
             return int(cursor.lastrowid)
 
@@ -259,7 +387,8 @@ class LabStore:
     def anomaly_report(self, limit: int = 30) -> dict[str, Any]:
         with self.store._connect() as connection:
             summary = connection.execute(
-                """SELECT COUNT(*) AS opportunities, COUNT(score) AS scored,
+                """SELECT SUM(CASE WHEN method = 'anomaly_robust' THEN 1 ELSE 0 END) AS opportunities,
+                   COUNT(score) AS scored,
                    SUM(flagged) AS flagged, COUNT(reviewed) AS reviewed,
                    SUM(CASE WHEN reviewed IS NOT NULL AND flagged = reviewed THEN 1 ELSE 0 END) AS agreed
                    FROM lab_anomalies"""
@@ -267,4 +396,125 @@ class LabStore:
             recent = connection.execute(
                 "SELECT * FROM lab_anomalies WHERE flagged = 1 ORDER BY id DESC LIMIT ?", (max(1, min(100, limit)),)
             ).fetchall()
-        return {"summary": dict(summary), "recent": [dict(row) for row in recent]}
+            methods = connection.execute(
+                """SELECT method, COUNT(*) AS opportunities, COUNT(score) AS scored,
+                   SUM(flagged) AS flagged, COUNT(reviewed) AS reviewed,
+                   SUM(CASE WHEN reviewed IS NOT NULL AND flagged = reviewed THEN 1 ELSE 0 END) AS agreed
+                   FROM lab_anomalies GROUP BY method ORDER BY method"""
+            ).fetchall()
+        return {"summary": dict(summary), "methods": [dict(row) for row in methods],
+                "recent": [dict(row) for row in recent]}
+
+    def timing_examples(self, area: str, kind: str | None = None, limit: int = 500) -> list[float]:
+        with self.store._connect() as connection:
+            if kind is None:
+                rows = connection.execute(
+                    "SELECT seconds FROM lab_timing_episodes WHERE area = ? ORDER BY opportunity_id DESC LIMIT ?",
+                    (area, limit),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT seconds FROM lab_timing_episodes WHERE area = ? AND kind = ? ORDER BY opportunity_id DESC LIMIT ?",
+                    (area, kind, limit),
+                ).fetchall()
+        return [float(row["seconds"]) for row in rows]
+
+    def add_timing_predictions(self, opportunity_id: int, area: str, kind: str,
+                               predictions: dict[str, float | None]) -> None:
+        with self.store._lock, self.store._connect() as connection:
+            connection.executemany(
+                "INSERT INTO lab_timing_predictions(opportunity_id, method, area, kind, predicted_seconds) VALUES (?, ?, ?, ?, ?)",
+                [(opportunity_id, method, area, kind, value) for method, value in predictions.items()],
+            )
+
+    def label_timing(self, opportunity_id: int) -> None:
+        with self.store._lock, self.store._connect() as connection:
+            row = connection.execute(
+                "SELECT created_at, trigger_json FROM shadow_opportunities WHERE id = ? AND actual_action_json IS NOT NULL",
+                (opportunity_id,),
+            ).fetchone()
+            if not row:
+                return
+            trigger = json.loads(row["trigger_json"])
+            seconds = max(0.0, min(600.0, (datetime.now(timezone.utc) - datetime.fromisoformat(row["created_at"])).total_seconds()))
+            connection.execute(
+                "INSERT OR IGNORE INTO lab_timing_episodes(opportunity_id, area, kind, seconds) VALUES (?, ?, ?, ?)",
+                (opportunity_id, str(trigger.get("area") or ""), str(trigger.get("kind") or ""), seconds),
+            )
+            connection.execute(
+                "UPDATE lab_timing_predictions SET actual_seconds = ? WHERE opportunity_id = ? AND actual_seconds IS NULL",
+                (seconds, opportunity_id),
+            )
+
+    def timing_report(self) -> list[dict[str, Any]]:
+        with self.store._connect() as connection:
+            rows = connection.execute(
+                """SELECT method, COUNT(*) AS opportunities, COUNT(predicted_seconds) AS predicted,
+                   COUNT(actual_seconds) AS labelled,
+                   SUM(CASE WHEN predicted_seconds IS NOT NULL AND actual_seconds IS NOT NULL THEN 1 ELSE 0 END) AS evaluated,
+                   AVG(ABS(predicted_seconds - actual_seconds)) AS mean_absolute_error_seconds
+                   FROM lab_timing_predictions GROUP BY method ORDER BY method"""
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def previous_opportunity(self, area: str) -> dict[str, Any] | None:
+        with self.store._connect() as connection:
+            rows = connection.execute(
+                "SELECT id, created_at, trigger_json FROM shadow_opportunities ORDER BY id DESC LIMIT 300"
+            ).fetchall()
+        for row in rows:
+            trigger = json.loads(row["trigger_json"])
+            if trigger.get("area") == area:
+                return {"id": row["id"], "created_at": row["created_at"], "trigger": trigger}
+        return None
+
+    def observe_next_event(self, previous: dict[str, Any], next_signal: str) -> bool:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(previous["created_at"])).total_seconds()
+        if not 0 <= age <= 7200:
+            return False
+        trigger = previous["trigger"]
+        sequence = trigger.get("sequence") or []
+        current_signal = sequence[-1] if sequence else ":".join(
+            str(trigger.get(key, "")) for key in ("kind", "direction", "new_band")
+        )
+        prior_signal = sequence[-2] if len(sequence) > 1 else None
+        with self.store._lock, self.store._connect() as connection:
+            connection.execute(
+                """INSERT INTO lab_event_transitions(created_at, area, previous_signal, current_signal, next_signal)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (utc_now(), str(trigger["area"]), prior_signal, current_signal, next_signal),
+            )
+            connection.execute(
+                "UPDATE lab_routine_predictions SET actual_signal = ? WHERE opportunity_id = ? AND actual_signal IS NULL",
+                (next_signal, previous["id"]),
+            )
+        return True
+
+    def event_transitions(self, area: str, limit: int = 2000) -> list[dict[str, Any]]:
+        with self.store._connect() as connection:
+            rows = connection.execute(
+                """SELECT previous_signal, current_signal, next_signal FROM lab_event_transitions
+                   WHERE area = ? ORDER BY id DESC LIMIT ?""", (area, limit)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_routine_predictions(self, opportunity_id: int, area: str,
+                                predictions: dict[str, str | None]) -> None:
+        created_at = utc_now()
+        with self.store._lock, self.store._connect() as connection:
+            connection.executemany(
+                """INSERT INTO lab_routine_predictions(opportunity_id, method, area, predicted_signal, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                [(opportunity_id, method, area, signal, created_at) for method, signal in predictions.items()],
+            )
+
+    def routine_report(self) -> list[dict[str, Any]]:
+        with self.store._connect() as connection:
+            rows = connection.execute(
+                """SELECT method, COUNT(*) AS opportunities, COUNT(predicted_signal) AS predicted,
+                   COUNT(actual_signal) AS labelled,
+                   SUM(CASE WHEN actual_signal IS NOT NULL AND predicted_signal = actual_signal THEN 1 ELSE 0 END) AS matched,
+                   SUM(CASE WHEN actual_signal IS NOT NULL AND predicted_signal IS NOT NULL AND predicted_signal != actual_signal THEN 1 ELSE 0 END) AS disagreed
+                   FROM lab_routine_predictions GROUP BY method ORDER BY method"""
+            ).fetchall()
+        return [dict(row) for row in rows]

@@ -76,19 +76,21 @@
     </main>
 
     <main id="learning" hidden>
-      <div class="intro"><h2>Learning methods</h2><p>Fifteen local experiments test different questions about your home. Only the original exact-context learner can feed suggestions; all new methods are observation-only.</p></div>
+      <div class="intro"><h2>Learning methods</h2><p>Thirty-one local experiments test seven different questions about your home. Only the original exact-context learner can feed suggestions; every new method is observation-only.</p></div>
       <p class="notice">Scores from different tasks are not directly comparable. A matching action within 10 minutes is not proof that you wanted a suggestion. Missing labels are not counted as mistakes. Sensor and response predictions are observational, not proof of cause.</p>
       <div id="learning-summary" class="metrics"></div>
       <nav id="learning-tabs" class="tabs" aria-label="Learning experiment families">
-        <button type="button" data-family="actions">Actions (8)</button>
-        <button type="button" data-family="sensors">Sensors (3)</button>
-        <button type="button" data-family="responses">Responses (2)</button>
-        <button type="button" data-family="preferences">Preferences (1)</button>
-        <button type="button" data-family="anomalies">Anomalies (1)</button>
+        <button type="button" data-family="actions">Actions (11)</button>
+        <button type="button" data-family="sensors">Sensors (7)</button>
+        <button type="button" data-family="responses">Responses (3)</button>
+        <button type="button" data-family="preferences">Preferences (3)</button>
+        <button type="button" data-family="anomalies">Anomalies (3)</button>
+        <button type="button" data-family="timing">Timing (2)</button>
+        <button type="button" data-family="routines">Event sequences (2)</button>
       </nav>
       <section data-learning-family="actions">
         <h3 class="section-title">Which manual action follows a local change?</h3>
-        <p class="muted small">All eight predictors see the same significant area event. Only the first user action within ten minutes labels it. Coverage and matches are separate.</p>
+        <p class="muted small">All eleven predictors see the same significant area event. Only the first user action within ten minutes labels it. Coverage and matches are separate.</p>
         <div class="table-wrap"><table><thead><tr><th>Method</th><th>Opportunities</th><th>Predicted</th><th>With user action</th><th>Matched</th><th>Different action</th></tr></thead><tbody id="learning-methods"></tbody></table></div>
         <h3 class="section-title">Recent event predictions</h3>
         <div class="table-wrap"><table><thead><tr><th>When / stimulus</th><th>Method</th><th>Prediction</th><th>User action</th><th>Why</th></tr></thead><tbody id="learning-predictions"></tbody></table></div>
@@ -109,12 +111,25 @@
         <h3 class="section-title">Was a suggestion helpful?</h3>
         <p class="muted small">This model uses only explicit Helpful / Not helpful feedback. Brier score measures probability error from 0 (best) to 1; it appears only after rated predictions.</p>
         <div id="learning-preferences" class="metrics"></div>
+        <div class="table-wrap"><table><thead><tr><th>Method</th><th>Predictions</th><th>Explicitly rated</th><th>Brier score</th></tr></thead><tbody id="learning-preference-methods"></tbody></table></div>
       </section>
       <section data-learning-family="anomalies" hidden>
         <h3 class="section-title">Was this sensor change unusual?</h3>
         <p class="muted small">A robust comparison with earlier changes flags unusual size, not necessarily a fault. Review flagged changes to measure usefulness; unreviewed flags are not errors.</p>
         <div id="learning-anomaly-summary" class="metrics"></div>
-        <div class="table-wrap"><table><thead><tr><th>When</th><th>Sensor</th><th>Score</th><th>Why</th><th>Your review</th></tr></thead><tbody id="learning-anomalies"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>Method</th><th>Changes</th><th>Scored</th><th>Flagged</th><th>Reviewed</th><th>Agreed</th></tr></thead><tbody id="learning-anomaly-methods"></tbody></table></div>
+        <h3 class="section-title">Flagged changes</h3>
+        <div class="table-wrap"><table><thead><tr><th>When</th><th>Method / sensor</th><th>Score</th><th>Why</th><th>Your review</th></tr></thead><tbody id="learning-anomalies"></tbody></table></div>
+      </section>
+      <section data-learning-family="timing" hidden>
+        <h3 class="section-title">How long after a change does a person act?</h3>
+        <p class="muted small">These are delay predictions only for events followed by an identifiable user action within ten minutes. No action is an unlabelled, censored opportunity, not a timing error. MAE is in seconds.</p>
+        <div class="table-wrap"><table><thead><tr><th>Method</th><th>Opportunities</th><th>Predicted</th><th>With action</th><th>Evaluated</th><th>MAE seconds</th></tr></thead><tbody id="learning-timing"></tbody></table></div>
+      </section>
+      <section data-learning-family="routines" hidden>
+        <h3 class="section-title">Which significant sensor event comes next?</h3>
+        <p class="muted small">These methods predict the next significant event in the same area within two hours. They do not infer named activities such as cooking or sleeping; a missing next event is not scored as a mistake.</p>
+        <div class="table-wrap"><table><thead><tr><th>Method</th><th>Opportunities</th><th>Predicted</th><th>Next event observed</th><th>Matched</th><th>Different event</th></tr></thead><tbody id="learning-routines"></tbody></table></div>
       </section>
     </main>
 

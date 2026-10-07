@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.0
+
+- Expand the shadow lab from 15 to 31 implemented methods across seven tasks:
+  add probabilistic/time-weighted action baselines, rolling and multi-sensor
+  forecasts, robust response deltas, personalized feedback variants, value and
+  shift anomaly detectors, action timing and next-event sequence prediction.
+- Persist timing, transitions, multi-sensor features and model-specific
+  feedback in additive SQLite tables; preserve prior observations and ratings.
+- Compare every new method in the Ingress UI with task-appropriate coverage
+  and metrics; unlabelled opportunities remain unscored.
+- Sync Home Assistant's configured time zone for clock-based and seasonal
+  features. All new methods remain observational; safe defaults are unchanged.
+
 ## 0.6.0
 
 - Add 12 observational methods to the existing three, for 15 local models

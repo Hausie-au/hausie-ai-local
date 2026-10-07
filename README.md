@@ -26,10 +26,11 @@ Hausie AI is the local decision layer above it.
   actions made by an identifiable Home Assistant user.
 - Uses a transparent frequency model with minimum-observation and confidence
   thresholds.
-- Registers 15 local methods across action prediction, sensor forecasting,
-  observed action responses, explicit preference feedback and anomaly detection.
+- Registers 31 local methods across action prediction, sensor forecasting,
+  observed action responses, explicit preference feedback, anomaly detection,
+  action timing and next-event sequences.
   The original exact-context learner is the only method that can feed decisions;
-  the other 14 methods never call Home Assistant services.
+  the other 30 methods never call Home Assistant services.
 - Associates a user action with the latest relevant, same-area stimulus within
   10 minutes. Predictions are saved before the later action trains the models.
 - Records area sensor values before a manual action and approximately 30
@@ -145,10 +146,11 @@ explain the difference. This is inspection-only and does not train an action
 policy. Episodes created before installing 0.5.0 are not backfilled; existing
 SQLite observations remain intact.
 
-### The 15-method local lab (0.6.0)
+### The 31-method local lab (0.7.0)
 
-The Learning methods page has five tabs. Every method makes its prediction
-*before* the later observation or explicit feedback arrives. No new method is
+The Learning methods page has seven tabs. Forecasts are saved *before* the
+later observation or explicit feedback arrives; anomaly methods score a
+change after it is observed. No new method is
 allowed to execute a Home Assistant service or silently replace the original
 decision policy. The lab is intentionally small and interpretable.
 
@@ -162,13 +164,29 @@ decision policy. The lab is intentionally small and interpretable.
 | Action | Nearest experiences | Weight similar past events and contexts instead of requiring an exact match. |
 | Action | Previous action | Estimate the next action from the last manual action in the area (within two hours). |
 | Action | Sensor event sequence | Match the two most recent significant sensor changes in the area. |
+| Action | Time-of-day action | Use same-area manual actions within one local clock hour. |
+| Action | Recent action frequency | Weight same-area manual actions by a 14-day half-life. |
+| Action | Probabilistic event features | Use smoothed conditional frequencies for event, occupancy, month and time features. |
 | Sensor | Last value | Assume a temperature, humidity or illuminance sensor stays where it is for 30 minutes. |
 | Sensor | Recent trend | Extrapolate a bounded recent change over 30 minutes. |
 | Sensor | Same-hour history | Use completed readings from the same local clock hour, once enough exist. |
+| Sensor | Rolling average | Average the latest numeric readings, including the current one. |
+| Sensor | Rolling median | Use a robust median of those readings. |
+| Sensor | Recent-value weighted average | Weight the most recent readings more heavily. |
+| Sensor | Nearby multi-sensor situations | Match prior completed windows using this sensor and other same-area readings. |
 | Response | Mean observed change | Predict a 30-minute sensor delta from previous clean windows after the same manual action. |
 | Response | Similar starting value | Predict that delta from windows with similar initial readings. |
+| Response | Median observed change | Use the median delta after the same manual action. |
 | Preference | Explicit feedback | Smooth Helpful / Not helpful ratings into a probability for the same suggested action. |
+| Preference | Recent explicit feedback | Weight newer explicit ratings more heavily. |
+| Preference | Occupancy-specific feedback | Use explicit ratings for the same action and occupancy state. |
 | Anomaly | Unusual sensor change | Compare change size with a robust median and median absolute deviation from earlier changes. |
+| Anomaly | Unusual sensor value | Compare the current value with earlier readings. |
+| Anomaly | Recent-vs-earlier shift | Compare the last five values with the preceding five; this alone does not prove a durable regime change. |
+| Timing | Typical action delay in area | Estimate seconds to an identifiable manual action from past labelled area events. |
+| Timing | Event-specific action delay | Estimate that delay for the same area and stimulus type. |
+| Next event | Next sensor-event transition | Predict the next significant event from the current event type. |
+| Next event | Two-event sequence | Predict from the previous and current significant events. |
 
 Action methods share the same event opportunities. The first identifiable
 user action in the same area within 10 minutes supplies a label; an unlabelled
@@ -187,11 +205,30 @@ needs at least two explicit ratings of the same action before it predicts;
 its Brier score is computed only when a later suggestion is explicitly rated.
 The anomaly model needs five earlier numeric changes, then lets you review
 flagged readings as Expected or Surprising. No review is inferred from silence.
+Timing models are scored only when an identifiable user acts within ten
+minutes; no action is censored, not a wrong timing prediction. Next-event
+models are scored when another significant same-area event arrives within
+two hours; they do not infer named activities such as cooking or sleeping.
+The add-on now obtains the configured Home Assistant time zone from
+`GET /api/config` for clock and seasonal features, falling back to the
+container zone only if that request fails. Historical 0.6.0 same-hour sensor
+records are preserved but cannot be reinterpreted reliably if the container
+previously used UTC.
 
 All records live in additive SQLite tables under the existing persistent
 `/data` volume; upgrades preserve earlier history. Models that lack evidence
 abstain instead of inventing a result. The lab does not yet rank methods or
 promote a winner; compare methods within the *same* task only.
+
+This breadth is bounded by available evidence and Raspberry Pi resources. It
+does **not** include a causal intervention learner, online exploration or
+reinforcement learning, per-person identification, named activity recognition,
+or a calibrated physical HVAC controller. Those require additional reliable
+labels, consent and/or safe controls; storing a before/after sensor reading is
+not sufficient. The larger lab retains detailed local histories indefinitely,
+so its SQLite file will grow with sensor count and runtime. Back up the add-on
+data before major upgrades and monitor available disk space; the add-on does
+not silently delete observations.
 
 ## Safety and privacy
 
@@ -303,7 +340,7 @@ the configured reversal window, Hausie AI records negative decision feedback.
 
 ## API for local inspection and controlled tests
 
-The read-only learning endpoints are `GET /api/v1/learning/lab` for all 15
+The read-only learning endpoints are `GET /api/v1/learning/lab` for all 31
 models, `GET /api/v1/learning/comparison` for action predictions and
 `GET /api/v1/learning/outcomes` for observational before/after sensor
 readings. The anomaly-review endpoint accepts an explicit user judgement.

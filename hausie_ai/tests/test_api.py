@@ -54,7 +54,7 @@ def test_ingress_panel_uses_supervisor_base_path(tmp_path: Path):
         assert response.status_code == 200
         assert '<base href="/api/hassio_ingress/example-token/">' in response.text
         assert 'href="ui/inventory"' in response.text
-        assert 'src="ui/assets/app.js?v=0.6.0"' in response.text
+        assert 'src="ui/assets/app.js?v=0.7.0"' in response.text
         assert client.get("/ui/").status_code == 200
         assert client.get("/ui//").status_code == 200
         assert client.get("http://testserver//ui").status_code == 200
@@ -86,6 +86,9 @@ def test_separate_ui_pages_filters_and_assets_work_through_ingress(tmp_path: Pat
             assert '<base href="/api/hassio_ingress/example-token/">' in response.text
             assert f'<body data-page="{page}">' in response.text
             assert marker in response.text
+            if page == "learning":
+                assert 'data-family="timing"' in response.text
+                assert 'data-family="routines"' in response.text
         javascript = client.get("/api/hassio_ingress/example-token/ui/assets/app.js", headers=header)
         assert javascript.status_code == 200
         assert javascript.headers["content-type"].startswith("text/javascript")
@@ -102,7 +105,7 @@ def test_separate_ui_pages_filters_and_assets_work_through_ingress(tmp_path: Pat
         assert client.get("/api/v1/learning/outcomes").json() == []
         lab = client.get("/api/hassio_ingress/example-token/api/v1/learning/lab", headers=header)
         assert lab.status_code == 200
-        assert len(lab.json()["catalog"]) == 15
+        assert len(lab.json()["catalog"]) == 31
         assert lab.json()["actions"] == {"methods": [], "recent": []}
 
 
