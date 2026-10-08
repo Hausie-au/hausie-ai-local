@@ -18,7 +18,7 @@ class FakeHA:
         self.logbook = logbook
         self.calls = []
 
-    def get_history(self, start, end, entity_ids):
+    def get_history(self, start, end, entity_ids, include_attributes=False):
         self.calls.append(("history", start, end, tuple(entity_ids)))
         result = []
         for entity_id in entity_ids:
@@ -171,12 +171,16 @@ def test_history_requests_are_bounded_and_filtered():
     start = datetime(2026, 10, 7, tzinfo=timezone.utc)
     end = start + timedelta(days=1)
     assert client.get_history(start, end, ["light.room", "sensor.room_lux"]) == []
+    assert client.get_history(start, end, ["event.button"], include_attributes=True) == []
     assert client.get_logbook(start, end, ["light.room"]) == []
     assert session.calls[0][0].endswith("/api/history/period/2026-10-07T00:00:00+00:00")
     assert session.calls[0][1]["filter_entity_id"] == "light.room,sensor.room_lux"
     assert "no_attributes" in session.calls[0][1]
-    assert session.calls[1][0].endswith("/api/logbook/2026-10-07T00:00:00+00:00")
-    assert session.calls[1][1]["entity"] == "light.room"
+    assert session.calls[1][1]["filter_entity_id"] == "event.button"
+    assert "no_attributes" not in session.calls[1][1]
+    assert "significant_changes_only" not in session.calls[1][1]
+    assert session.calls[2][0].endswith("/api/logbook/2026-10-07T00:00:00+00:00")
+    assert session.calls[2][1]["entity"] == "light.room"
 
 
 def test_service_pauses_decisions_until_history_is_loaded(tmp_path: Path):

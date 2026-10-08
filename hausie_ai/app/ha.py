@@ -29,14 +29,18 @@ class HomeAssistantClient:
             raise ValueError("Home Assistant did not provide a valid time_zone.")
         return name
 
-    def get_history(self, start: datetime, end: datetime, entity_ids: list[str]) -> list[list[dict[str, Any]]]:
+    def get_history(self, start: datetime, end: datetime, entity_ids: list[str],
+                    include_attributes: bool = False) -> list[list[dict[str, Any]]]:
         """Fetch a bounded Recorder window; keep entity IDs on every row."""
         if not entity_ids:
             return []
+        params = {"end_time": end.isoformat(), "filter_entity_id": ",".join(entity_ids)}
+        if not include_attributes:
+            params["no_attributes"] = ""
+            params["significant_changes_only"] = "1"
         response = self.session.get(
             f"{self.base_url}/api/history/period/{start.isoformat()}",
-            params={"end_time": end.isoformat(), "filter_entity_id": ",".join(entity_ids),
-                    "no_attributes": "", "significant_changes_only": "1"},
+            params=params,
             timeout=60,
         )
         response.raise_for_status()

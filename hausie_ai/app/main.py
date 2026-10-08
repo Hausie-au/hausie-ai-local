@@ -124,6 +124,12 @@ def history_actions(limit: int = 50) -> list[dict[str, Any]]:
     return service.store.recent_historical_actions(limit)
 
 
+@app.get("/api/v1/buttons/presses")
+def button_presses(limit: int = 50) -> list[dict[str, Any]]:
+    """Read-only audit of physical gestures and confirmed low-risk effects."""
+    return service.store.recent_button_presses(limit)
+
+
 @app.get("/api/v1/decisions")
 def decisions(limit: int = 30) -> list[dict[str, Any]]:
     return service.store.recent_decisions(limit)

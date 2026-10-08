@@ -47,6 +47,7 @@ def test_inventory_and_environment_endpoints(tmp_path: Path):
         assert client.get("/api/v1/context").json()["context"]["environment"]
         assert client.get("/api/v1/environment/events").status_code == 200
         assert client.get("/api/v1/history/actions").status_code == 200
+        assert client.get("/api/v1/buttons/presses").json() == []
 
 
 def test_ingress_panel_uses_supervisor_base_path(tmp_path: Path):
@@ -56,9 +57,10 @@ def test_ingress_panel_uses_supervisor_base_path(tmp_path: Path):
         assert response.status_code == 200
         assert '<base href="/api/hassio_ingress/example-token/">' in response.text
         assert 'href="ui/inventory"' in response.text
-        assert 'src="ui/assets/app.js?v=0.8.0"' in response.text
+        assert 'src="ui/assets/app.js?v=0.9.0"' in response.text
         assert 'id="history-import-status"' in response.text
         assert client.get("/api/v1/status").json()["history_import"]["days"] == 30
+        assert client.get("/api/v1/status").json()["physical_buttons"]["presses"] == 0
         assert client.get("/ui/").status_code == 200
         assert client.get("/ui//").status_code == 200
         assert client.get("http://testserver//ui").status_code == 200
@@ -81,7 +83,7 @@ def test_separate_ui_pages_filters_and_assets_work_through_ingress(tmp_path: Pat
     with TestClient(main.app) as client:
         for page, marker in [
             ("inventory", 'id="filter-area"'),
-            ("activity", 'id="events"'),
+            ("activity", 'id="button-presses"'),
             ("decisions", 'id="decisions-table"'),
             ("learning", 'id="learning-methods"'),
         ]:

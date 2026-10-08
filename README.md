@@ -1,7 +1,7 @@
 # Hausie AI
 
 Hausie AI is a local-first Home Assistant app that observes household context,
-learns from repeated **explicit user actions**, and produces an explainable
+learns from repeated **attributed user actions and confirmed physical-button effects**, and produces an explainable
 decision: suggest one low-risk action or do nothing.
 
 It is an experimental proof of concept, not a replacement for Home Assistant
@@ -13,8 +13,8 @@ Hausie AI is the local decision layer above it.
 - Subscribes to Home Assistant `state_changed` events over the Supervisor API.
 - Before live decisions, backfills retained Home Assistant Recorder history (30
   days of requested lookback by default) in one-day windows. Logbook provides
-  user attribution, so only verified low-risk user changes become training
-  actions; un-attributed or automated changes do not become preferences.
+  user attribution. Known physical-button events can also confirm a safe
+  device effect; unrelated automated changes do not become preferences.
 - Resynchronises the full Home Assistant state regularly as a safe fallback.
 - Builds a local inventory from Home Assistant's state, area, device, entity
   and label registries. This is the same source data that Hausie uses to build
@@ -27,7 +27,8 @@ Hausie AI is the local decision layer above it.
   happen. A sensor does not need to wait for the next 15-minute bucket to be
   recorded.
 - Learns low-risk actions for lights, covers and media players from repeated
-  actions made by an identifiable Home Assistant user.
+  attributed user actions, plus confirmed physical-button effects for known
+  TEST_HAUSIE controls. A button press is never assigned to a named person.
 - Uses a transparent frequency model with minimum-observation and confidence
   thresholds.
 - Registers 31 local methods across action prediction, sensor forecasting,
@@ -52,7 +53,7 @@ Hausie AI is the local decision layer above it.
 
 ## How the learning loop works
 
-On first startup after installing 0.8.0, Hausie AI first reads its current
+On first startup after installing 0.8.0 or newer, Hausie AI first reads its current
 inventory to know which entities are relevant, then imports the available
 historical changes. The live event stream is buffered during this import;
 suggestions and automatic actions wait for completion. The Overview page and
@@ -70,9 +71,10 @@ Assistant's Recorder database directly. The requested lookback cannot recover
 data older than Home Assistant actually retained, including entities excluded
 from Recorder or Logbook. Its first state for an entity is a baseline, not a
 trainable action. Physical button presses or integrations with no attributable
-user ID remain unlabelled rather than being incorrectly treated as deliberate
-user preferences. The Environmental activity page audits all imported
-action-like changes as `user`, `automation` or `unknown`. Historical readings
+user ID remain unlabelled unless a known physical button press, its helper
+selection at that time and a confirmed safe device effect can be linked. The
+Environmental activity page audits imported action-like changes as `user`,
+`physical_button`, `automation` or `unknown`. Historical readings
 seed sensor histories, including same-local-hour numeric baselines; verified actions
 seed the main learner and action shadow models. Where a relevant same-area
 sensor change preceded an action within ten minutes, the historical episode
@@ -86,6 +88,31 @@ seconds; it is not proof of causality. For larger Recorder databases, set
 and 365. The default is 30; the UI reports how many rows were actually
 imported. Imports are bounded to 300,000 state rows per day and pause with a
 visible error if that limit is exceeded rather than exhausting the Pi's RAM.
+
+### Learning from physical controls
+
+Version 0.9.0 supports the TEST_HAUSIE Cube, Ali button, IKEA dual button and
+BILRESA wheel event entities configured in this home. The `input_select`
+helpers are **mappings**, not button-press evidence. When one of those event
+entities changes, Hausie records its gesture, current helper selection,
+operation, timestamp and pre-press context with `actor=unknown`. It checks the
+enabled/type/mode helpers so that an inactive mapping is not mistaken for an
+executed control. A mapped, safe light/cover destination must actually change
+within eight seconds before the action trains the frequency learner and
+applicable shadow action methods. For dials, a brightness or cover-position
+attribute change can confirm the effect even when the entity remains `on` or
+`open`. These become absolute light brightness / cover position actions; they
+are still subject to the same safety layer and default dry-run behaviour.
+
+The historic import now reads retained button event attributes and the helper
+values that existed at each press time. It rechecks existing 0.8.0 history
+idempotently so an earlier `automation`/`unknown` row may be upgraded to
+`physical_button` when the causal chain is sufficiently specific. It never
+replays an old press. Unmapped selections, disabled controls, unsupported
+domains, missing Recorder events, or changes that cannot be confidently tied
+to a known destination are audited as presses but do not train an executable
+action. Attribution is a bounded temporal match, not proof of causality; the
+Activity page exposes each press and its confirmed effect count for review.
 
 ```text
 Home Assistant event
@@ -352,7 +379,7 @@ The app writes structured messages to standard output, visible in the Home
 Assistant Log tab. It never logs tokens.
 
 ```text
-STARTUP version=0.8.0 mode=observe-and-suggest events=True ...
+STARTUP version=0.9.0 mode=observe-and-suggest events=True ...
 EVENT_STREAM connected subscription=state_changed
 INVENTORY registry_sync areas=8 devices=74 entities=214 labels=12
 HISTORY_BOOTSTRAP state=complete days=30 actions=42 environmental=1728 experiences=12 already_imported=False

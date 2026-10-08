@@ -10,6 +10,7 @@ from time import monotonic
 from typing import Any
 
 from .cloud import CloudClient
+from .buttons import BUTTON_EVENT_IDS, attribute_effect, matching_press, resolve_press
 from .events import HomeAssistantEventStream
 from .experiments import RELEVANT_KINDS, ShadowLearners
 from .ha import HomeAssistantClient
@@ -21,7 +22,7 @@ from .safety import SafetyPolicy
 from .settings import Settings
 from .storage import Store
 
-ADDON_VERSION = "0.8.0"
+ADDON_VERSION = "0.9.0"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -126,6 +127,7 @@ class HausieAIService:
         self._last_action_attempt: dict[str, float] = {}
         self._executed_actions: dict[str, ExecutedAction] = {}
         self._recent_triggers: list[RecentTrigger] = []
+        self._recent_button_presses: list[dict[str, Any]] = []
         self._trigger_baselines: dict[str, str] = {}
         self._history_lock = threading.Lock()
         self._history_ready = True  # start() gates only the running service, not direct unit-test calls
@@ -215,10 +217,11 @@ class HausieAIService:
         def report_progress(progress: dict[str, Any]) -> None:
             self.history_status = progress
             if progress.get("state") == "running":
-                LOGGER.info("HISTORY_BOOTSTRAP progress=%s/%s actions=%s action_changes=%s environmental=%s",
+                LOGGER.info("HISTORY_BOOTSTRAP progress=%s/%s actions=%s action_changes=%s environmental=%s button_presses=%s button_effects=%s",
                             progress.get("processed_days"), progress.get("days"),
                             progress.get("actions"), progress.get("seen_actions"),
-                            progress.get("environmental"))
+                            progress.get("environmental"), progress.get("button_presses"),
+                            progress.get("button_effects"))
 
         try:
             importer = HistoryBootstrap(self.ha, self.store, self.safety,
@@ -232,9 +235,10 @@ class HausieAIService:
             if final_cutoff > cutoff:
                 result = importer.run(final_cutoff)
                 cutoff = final_cutoff
-            LOGGER.info("HISTORY_BOOTSTRAP state=complete days=%s actions=%s environmental=%s experiences=%s already_imported=%s",
+            LOGGER.info("HISTORY_BOOTSTRAP state=complete days=%s actions=%s environmental=%s experiences=%s button_presses=%s button_effects=%s already_imported=%s",
                         result["days"], result["actions"], result["environmental"],
-                        result.get("experiences", 0), result["already_imported"])
+                        result.get("experiences", 0), result.get("button_presses", 0),
+                        result.get("button_effects", 0), result["already_imported"])
         except Exception as exc:
             self.history_status = {"state": "failed", "days": self.settings.history_import_days,
                                    "error": str(exc)}
@@ -317,8 +321,42 @@ class HausieAIService:
         context_before = self.current_context()
         source = self._classify_source(event, new_state)
         action = action_from_state_change(old_state, new_state)
+        button_only_action = attribute_effect(old_state, new_state) if not action else None
         old_value = str((old_state or {}).get("state", ""))
         new_value = str(new_state.get("state", ""))
+        event_time = new_state.get("last_changed") or event.get("time_fired")
+        try:
+            changed_at = datetime.fromisoformat(str(event_time).replace("Z", "+00:00"))
+            if changed_at.tzinfo is None:
+                raise ValueError("state timestamp lacks time zone")
+            changed_at = changed_at.astimezone(timezone.utc)
+        except (TypeError, ValueError):
+            changed_at = datetime.now(timezone.utc)
+        self._recent_button_presses = [
+            press for press in self._recent_button_presses
+            if 0 <= (changed_at - datetime.fromisoformat(press["pressed_at"])).total_seconds() <= 8
+        ]
+        if entity_id in BUTTON_EVENT_IDS and old_value != new_value:
+            attributes = new_state.get("attributes") or {}
+            gesture = str(attributes.get("event_type") or "")
+            press = resolve_press(entity_id, gesture, attributes, self.state_index, changed_at, context_before)
+            if press:
+                press_id, is_new = self.store.record_button_press(press)
+                if is_new:
+                    press["id"] = press_id
+                    self._recent_button_presses.append(press)
+                LOGGER.info("BUTTON press_id=%s new=%s entity=%s gesture=%s helper=%s selection=%s operation=%s actor=unknown",
+                            press_id, is_new, entity_id, gesture, press["helper_entity_id"],
+                            press["selection"], press["operation"])
+        candidate = action or button_only_action
+        if candidate and source in {"automation", "unknown"} and self.safety.evaluate(candidate).allowed:
+            press = matching_press(self._recent_button_presses, changed_at, candidate,
+                                   old_state or {}, new_state)
+            if press and self.store.record_button_effect(press["id"], changed_at.isoformat(), candidate):
+                action = candidate
+                source = "physical_button"
+                context_before = press["context"]
+                LOGGER.info("BUTTON_EFFECT press_id=%s action=%s actor=unknown", press["id"], candidate)
         self.last_event_at = monotonic()
         self.last_event_source = source
         LOGGER.info("EVENT source=%s entity=%s state=%s->%s", source, entity_id, old_value, new_value)
@@ -330,8 +368,9 @@ class HausieAIService:
                 self.lab_store.label_timing(associated.opportunity_id)
                 self.store.add_experience(context_before, associated.trigger, action, source)
                 LOGGER.info("EXPERIENCE opportunity_id=%s source=%s trigger=%s action=%s", associated.opportunity_id, source, associated.trigger, action)
-            self._learn_from_event(context_before, action, source)
-            if source == "user":
+            self._learn_from_event(context_before, action, source,
+                                   changed_at.isoformat() if source == "physical_button" else None)
+            if source in {"user", "physical_button"}:
                 area = self.inventory_by_entity.get(entity_id, {}).get("area_id")
                 if area:
                     before = self._area_environment(str(area))
@@ -391,21 +430,22 @@ class HausieAIService:
         if action and expected_state_for(action.action) == str(new_state.get("state", "")).lower():
             return "hausie_ai"
         context = new_state.get("context") or event.get("context") or {}
-        if context.get("user_id"):
-            return "user"
         if context.get("parent_id"):
             return "automation"
+        if context.get("user_id"):
+            return "user"
         return "unknown"
 
-    def _learn_from_event(self, context: dict[str, Any], action: dict[str, Any], source: str) -> None:
-        if source == "user" or self.settings.learn_from_unknown:
-            observation_id = self.learner.observe(context, action, source)
+    def _learn_from_event(self, context: dict[str, Any], action: dict[str, Any],
+                          source: str, created_at: str | None = None) -> None:
+        if source in {"user", "physical_button"} or self.settings.learn_from_unknown:
+            observation_id = self.learner.observe(context, action, source, created_at)
             LOGGER.info("LEARN observation_id=%s source=%s action=%s context=%s", observation_id, source, action, context)
         else:
-            LOGGER.info("LEARN skipped source=%s action=%s reason=explicit-user-events-only", source, action)
+            LOGGER.info("LEARN skipped source=%s action=%s reason=no-attributable-human-intent", source, action)
 
     def _associated_trigger(self, entity_id: str, source: str) -> RecentTrigger | None:
-        if source != "user":
+        if source not in {"user", "physical_button"}:
             return None
         target = self.inventory_by_entity.get(entity_id, {})
         area = target.get("area_id") or target.get("area_name")
@@ -480,6 +520,19 @@ class HausieAIService:
         if not current:
             return True
         state = str(current.get("state", "")).lower()
+        service_data = action.get("service_data") or {}
+        attributes = current.get("attributes") or {}
+        if action.get("domain") == "light" and "brightness_pct" in service_data:
+            try:
+                brightness = round(int(attributes["brightness"]) * 100 / 255)
+                return state != "on" or abs(brightness - int(service_data["brightness_pct"])) > 1
+            except (KeyError, TypeError, ValueError):
+                return True
+        if action.get("domain") == "cover" and "position" in service_data:
+            try:
+                return abs(int(attributes["current_position"]) - int(service_data["position"])) > 1
+            except (KeyError, TypeError, ValueError):
+                return True
         expected = expected_state_for(action)
         if expected == "open":
             return state not in {"open", "opening"}
@@ -504,7 +557,7 @@ class HausieAIService:
 
     def _record_reversal_if_needed(self, entity_id: str, state: str, source: str) -> None:
         execution = self._executed_actions.get(entity_id)
-        if not execution or source != "user":
+        if not execution or source not in {"user", "physical_button"}:
             return
         if monotonic() - execution.executed_at > self.settings.reversal_window_seconds:
             return
@@ -632,6 +685,7 @@ class HausieAIService:
             "inventory_registry_available": bool(self.registry_snapshot),
             "home_time_zone": self.home_zone_name,
             "history_import": self.history_status,
+            "physical_buttons": self.store.button_counts(),
             "last_inventory_error": self.last_inventory_error,
             "current_context": self.current_context() if self.last_states else None,
             "settings": {

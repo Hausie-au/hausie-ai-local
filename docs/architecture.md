@@ -23,8 +23,9 @@ context (weekday, 15-minute bucket, occupancy, environmental bands)
 ```
 
 The first model is intentionally a contextual frequency table. A row is
-learned only from an explicit user observation unless `learn_from_unknown` is
-enabled for controlled experiments. The cloud integration sends heartbeat and
+learned from an attributed user observation or a confirmed physical-button
+effect unless `learn_from_unknown` is enabled for controlled experiments.
+The cloud integration sends heartbeat and
 aggregate counters only; it is not in the inference path.
 
 The inventory joins Home Assistant state with the area, device, entity and
@@ -42,4 +43,14 @@ unique import keys to avoid duplicates. Live events buffer during backfill.
 Historical data seeds the main frequency learner and relevant shadow histories
 but does not manufacture feedback or score predictions retroactively. No
 historical service call is replayed.
+
+Known TEST_HAUSIE button event entities are processed separately from helper
+state changes. An event captures the gesture, the helper's value at that time
+captures the configured selection, and a low-risk destination change within
+eight seconds confirms an effect. Matching uses an explicit destination map;
+unmapped scripts/scenes and unrelated automated device changes are only
+audited. The actor remains unknown. Brightness/position attribute changes are
+converted to absolute, safety-checked light/cover actions. Backfill queries
+event history with attributes and historic helper states rather than assuming
+today's helper values were always in effect.
 

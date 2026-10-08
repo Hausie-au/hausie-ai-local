@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.0
+
+- Observe TEST_HAUSIE Cube, Ali, IKEA dual-button and BILRESA wheel event
+  entities as physical gestures without inventing a person identity.
+- Resolve the helper value at press time and confirm a safe light/cover device
+  effect within eight seconds against an explicit destination map. Attribute-
+  only brightness and cover-position changes also count as confirmed effects.
+- Train the original learner and applicable shadow action methods from
+  confirmed button effects, with separate `physical_button` provenance.
+  Unmapped presses and unrelated automations remain audit-only.
+- Backfill retained button events and historical helper states, including an
+  idempotent rescan of existing 0.8.0 history; no historical services are run.
+- Show button presses and confirmed effects on the Activity page and in a
+  read-only API. Keep `auto_act=false` and `dry_run=true` defaults.
+
 ## 0.8.0
 
 - Import retained Recorder history before online learning, using bounded

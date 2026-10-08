@@ -150,8 +150,87 @@ class Store:
                     imported_actions INTEGER NOT NULL,
                     imported_environmental INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS button_presses (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    pressed_at TEXT NOT NULL,
+                    event_entity_id TEXT NOT NULL,
+                    gesture TEXT NOT NULL,
+                    helper_entity_id TEXT NOT NULL,
+                    selection TEXT NOT NULL,
+                    operation TEXT NOT NULL,
+                    context_json TEXT NOT NULL,
+                    origin TEXT NOT NULL,
+                    UNIQUE(event_entity_id, pressed_at)
+                );
+                CREATE INDEX IF NOT EXISTS idx_button_presses_time ON button_presses(pressed_at DESC);
+                CREATE TABLE IF NOT EXISTS button_effects (
+                    press_id INTEGER NOT NULL,
+                    changed_at TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    action_json TEXT NOT NULL,
+                    PRIMARY KEY (press_id, changed_at, entity_id),
+                    FOREIGN KEY(press_id) REFERENCES button_presses(id)
+                );
                 """
             )
+
+    @staticmethod
+    def _insert_button_press(connection: sqlite3.Connection, press: dict[str, Any], origin: str) -> tuple[int, bool]:
+        cursor = connection.execute(
+            """INSERT OR IGNORE INTO button_presses
+               (pressed_at, event_entity_id, gesture, helper_entity_id, selection,
+                operation, context_json, origin) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (press["pressed_at"], press["event_entity_id"], press["gesture"],
+             press["helper_entity_id"], press["selection"], press["operation"],
+             json.dumps(press["context"], sort_keys=True), origin),
+        )
+        row = connection.execute(
+            "SELECT id FROM button_presses WHERE event_entity_id = ? AND pressed_at = ?",
+            (press["event_entity_id"], press["pressed_at"]),
+        ).fetchone()
+        return int(row["id"]), bool(cursor.rowcount)
+
+    @staticmethod
+    def _insert_button_effect(connection: sqlite3.Connection, press_id: int,
+                              at: str, action: dict[str, Any]) -> bool:
+        cursor = connection.execute(
+            """INSERT OR IGNORE INTO button_effects (press_id, changed_at, entity_id, action_json)
+               VALUES (?, ?, ?, ?)""",
+            (press_id, at, action["entity_id"], json.dumps(action, sort_keys=True)),
+        )
+        return bool(cursor.rowcount)
+
+    def record_button_press(self, press: dict[str, Any], origin: str = "live") -> tuple[int, bool]:
+        with self._lock, self._connect() as connection:
+            return self._insert_button_press(connection, press, origin)
+
+    def record_button_effect(self, press_id: int, at: str, action: dict[str, Any]) -> bool:
+        with self._lock, self._connect() as connection:
+            return self._insert_button_effect(connection, press_id, at, action)
+
+    def button_press_exists(self, entity_id: str, pressed_at: str) -> bool:
+        with self._connect() as connection:
+            return connection.execute(
+                "SELECT 1 FROM button_presses WHERE event_entity_id = ? AND pressed_at = ?",
+                (entity_id, pressed_at),
+            ).fetchone() is not None
+
+    def recent_button_presses(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT p.id, p.pressed_at, p.event_entity_id, p.gesture, p.helper_entity_id,
+                          p.selection, p.operation, p.origin, COUNT(e.press_id) AS confirmed_actions
+                   FROM button_presses p LEFT JOIN button_effects e ON e.press_id = p.id
+                   GROUP BY p.id ORDER BY p.pressed_at DESC LIMIT ?""",
+                (max(1, min(250, limit)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def button_counts(self) -> dict[str, int]:
+        with self._connect() as connection:
+            presses = connection.execute("SELECT COUNT(*) FROM button_presses").fetchone()[0]
+            effects = connection.execute("SELECT COUNT(*) FROM button_effects").fetchone()[0]
+        return {"presses": int(presses), "confirmed_actions": int(effects)}
 
     def history_bootstrap_state(self) -> dict[str, Any] | None:
         with self._connect() as connection:
@@ -159,6 +238,8 @@ class Store:
         return dict(row) if row else None
 
     def history_record_exists(self, entity_id: str, changed_at: str, new_state: str) -> bool:
+        if entity_id.startswith("event.") and self.button_press_exists(entity_id, changed_at):
+            return True
         with self._connect() as connection:
             return connection.execute(
                 """SELECT 1 FROM history_import_records h
@@ -166,7 +247,7 @@ class Store:
                      AND (h.kind = 'environmental' OR EXISTS (
                          SELECT 1 FROM historical_action_events a
                          WHERE a.entity_id = h.entity_id AND a.changed_at = h.changed_at
-                           AND a.new_state = h.new_state AND a.source = 'user'))""",
+                           AND a.new_state = h.new_state AND a.source IN ('user', 'physical_button')))""",
                 (entity_id, changed_at, new_state),
             ).fetchone() is not None
 
@@ -204,9 +285,16 @@ class Store:
         Older locally observed events are also checked by timestamp to avoid
         counting the same user action twice on an add-on upgrade.
         """
-        counts = {"actions": 0, "seen_actions": 0, "environmental": 0, "experiences": 0, "transitions": 0, "timings": 0}
+        counts = {"actions": 0, "seen_actions": 0, "environmental": 0,
+                  "experiences": 0, "transitions": 0, "timings": 0, "button_presses": 0,
+                  "button_effects": 0}
         with self._lock, self._connect() as connection:
             for record in records:
+                press = record.get("button_press")
+                if press:
+                    _, new_press = self._insert_button_press(connection, press, "history")
+                    counts["button_presses"] += int(new_press)
+                    continue
                 at = record["changed_at"]
                 entity_id = record["entity_id"]
                 state = record["new_state"]
@@ -228,12 +316,15 @@ class Store:
                            WHERE entity_id = ? AND changed_at = ? AND new_state = ?""",
                         (entity_id, at, state),
                     ).fetchone()
-                    if not prior_source or prior_source["source"] != "unknown":
+                    if not prior_source or prior_source["source"] not in {"unknown", "automation"}:
+                        continue
+                    promoted_source = record.get("observed_source") or "unknown"
+                    if promoted_source == "user" and prior_source["source"] == "automation":
                         continue
                     connection.execute(
-                        """UPDATE historical_action_events SET source = 'user'
+                        """UPDATE historical_action_events SET source = ?
                            WHERE entity_id = ? AND changed_at = ? AND new_state = ?""",
-                        (entity_id, at, state),
+                        (promoted_source, entity_id, at, state),
                     )
                 profile = record["profile"]
                 observed_action = record.get("observed_action")
@@ -283,6 +374,14 @@ class Store:
                 action = record.get("action")
                 if not action:
                     continue
+                press_ref = record.get("button_press_ref")
+                if press_ref:
+                    press_row = connection.execute(
+                        "SELECT id FROM button_presses WHERE event_entity_id = ? AND pressed_at = ?",
+                        (press_ref["event_entity_id"], press_ref["pressed_at"]),
+                    ).fetchone()
+                    if press_row and self._insert_button_effect(connection, int(press_row["id"]), at, action):
+                        counts["button_effects"] += 1
                 action_json = json.dumps(action, sort_keys=True)
                 existing = connection.execute(
                     """SELECT 1 FROM observations WHERE action_json = ?
@@ -293,9 +392,10 @@ class Store:
                     continue
                 from .learning import context_signature
                 context = record["context"]
+                training_source = "historical_button" if press_ref else "historical_user"
                 connection.execute(
-                    "INSERT INTO observations(created_at, context_json, action_json, source) VALUES (?, ?, ?, 'historical_user')",
-                    (at, json.dumps(context_signature(context), sort_keys=True), action_json),
+                    "INSERT INTO observations(created_at, context_json, action_json, source) VALUES (?, ?, ?, ?)",
+                    (at, json.dumps(context_signature(context), sort_keys=True), action_json, training_source),
                 )
                 counts["actions"] += 1
                 area = record.get("area")
@@ -319,9 +419,9 @@ class Store:
                     connection.execute(
                         """INSERT INTO learning_experiences
                            (created_at, context_json, trigger_json, action_json, source)
-                           VALUES (?, ?, ?, ?, 'historical_user')""",
+                           VALUES (?, ?, ?, ?, ?)""",
                         (at, json.dumps(context, sort_keys=True),
-                         json.dumps(trigger, sort_keys=True), action_json),
+                         json.dumps(trigger, sort_keys=True), action_json, training_source),
                     )
                     counts["experiences"] += 1
                     trigger_at = record.get("trigger_at")
@@ -507,11 +607,12 @@ class Store:
             for row in rows
         ]
 
-    def add_observation(self, context: dict[str, Any], action: dict[str, Any], source: str) -> int:
+    def add_observation(self, context: dict[str, Any], action: dict[str, Any], source: str,
+                        created_at: str | None = None) -> int:
         with self._lock, self._connect() as connection:
             cursor = connection.execute(
                 "INSERT INTO observations(created_at, context_json, action_json, source) VALUES (?, ?, ?, ?)",
-                (utc_now(), json.dumps(context, sort_keys=True), json.dumps(action, sort_keys=True), source),
+                (created_at or utc_now(), json.dumps(context, sort_keys=True), json.dumps(action, sort_keys=True), source),
             )
             return int(cursor.lastrowid)
 

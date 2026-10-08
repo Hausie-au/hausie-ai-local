@@ -66,8 +66,9 @@ class Learner:
         self.min_observations = min_observations
         self.min_confidence = min_confidence
 
-    def observe(self, context: dict[str, Any], action: dict[str, Any], source: str) -> int:
-        return self.store.add_observation(context_signature(context), action, source)
+    def observe(self, context: dict[str, Any], action: dict[str, Any], source: str,
+                created_at: str | None = None) -> int:
+        return self.store.add_observation(context_signature(context), action, source, created_at)
 
     def recommend(self, context: dict[str, Any]) -> tuple[Candidate | None, str]:
         rows = self.store.candidate_rows(context_signature(context))

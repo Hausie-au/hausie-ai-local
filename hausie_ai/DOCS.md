@@ -17,8 +17,11 @@ The app has three Home Assistant inputs:
 
 The Ingress UI has separate Overview, Inventory, Environmental activity,
 Decisions and Learning methods pages. Overview shows backfill progress.
-Environmental activity audits imported action-like changes as user, automation
-or unknown; only reliably user-attributed ones train action preferences. The
+Environmental activity audits imported action-like changes as user, physical
+button, automation or unknown. It also shows each observed button gesture,
+its then-current helper mapping, and the number of confirmed safe effects.
+User-attributed actions and confirmed physical-button effects train action
+preferences; unrelated automations and unknown changes do not. The
 Inventory groups entities by devices, sensors and
 presence, automations, action targets and other entities. Its filters can be
 combined by area, domain, state, device class, Hausie AI role, safety
@@ -29,8 +32,8 @@ No Home Assistant configuration files are mapped into the container and no
 additional privileged capabilities are requested.
 
 Keep `auto_act: false` and `dry_run: true` while reviewing the app log. Only
-actions identified by Home Assistant as user actions become training data by
-default. Existing automations and unknown sources are visible in the log but
+attributed user actions and safely confirmed TEST_HAUSIE physical-button
+effects become training data by default. Existing unrelated automations and unknown sources are visible in the log but
 are skipped unless `learn_from_unknown` is enabled for an experiment.
 Historical actions are never sent back to Home Assistant as service calls.
 
