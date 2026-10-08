@@ -13,7 +13,7 @@ Hausie AI is the local decision layer above it.
 - Subscribes to Home Assistant `state_changed` events over the Supervisor API.
 - Before live decisions, backfills retained Home Assistant Recorder history (30
   days of requested lookback by default) in one-day windows. Logbook provides
-  user attribution. Known physical-button events can also confirm a safe
+  user attribution. Physical-button events can also confirm a safe
   device effect; unrelated automated changes do not become preferences.
 - Resynchronises the full Home Assistant state regularly as a safe fallback.
 - Builds a local inventory from Home Assistant's state, area, device, entity
@@ -28,7 +28,8 @@ Hausie AI is the local decision layer above it.
   recorded.
 - Learns low-risk actions for lights, covers and media players from repeated
   attributed user actions, plus confirmed physical-button effects for known
-  TEST_HAUSIE controls. A button press is never assigned to a named person.
+  TEST_HAUSIE controls or newly discovered controls with a direct Home Assistant
+  context link. A button press is never assigned to a named person.
 - Uses a transparent frequency model with minimum-observation and confidence
   thresholds.
 - Registers 31 local methods across action prediction, sensor forecasting,
@@ -72,7 +73,9 @@ data older than Home Assistant actually retained, including entities excluded
 from Recorder or Logbook. Its first state for an entity is a baseline, not a
 trainable action. Physical button presses or integrations with no attributable
 user ID remain unlabelled unless a known physical button press, its helper
-selection at that time and a confirmed safe device effect can be linked. The
+selection at that time and a confirmed safe device effect can be linked, or a
+newly discovered button has a direct live Home Assistant context link to the
+effect. The
 Environmental activity page audits imported action-like changes as `user`,
 `physical_button`, `automation` or `unknown`. Historical readings
 seed sensor histories, including same-local-hour numeric baselines; verified actions
@@ -91,8 +94,14 @@ visible error if that limit is exceeded rather than exhausting the Pi's RAM.
 
 ### Learning from physical controls
 
-Version 0.9.0 supports the TEST_HAUSIE Cube, Ali button, IKEA dual button and
-BILRESA wheel event entities configured in this home. The `input_select`
+Version 0.10.0 still supports the TEST_HAUSIE Cube, Ali button, IKEA dual button and
+BILRESA wheel event entities configured in this home. It also discovers any
+Home Assistant `event.*` entity carrying the `button` label (on the entity or
+device) or the `button` device class. See the **Physical buttons** inventory
+tab and **Physical button learning** activity table. Home Assistant `button.*`
+entities are virtual controls, not evidence that a physical button was pressed;
+integrations that emit only raw bus events without an event entity need a
+separate adapter. The `input_select`
 helpers are **mappings**, not button-press evidence. When one of those event
 entities changes, Hausie records its gesture, current helper selection,
 operation, timestamp and pre-press context with `actor=unknown`. It checks the
@@ -103,12 +112,20 @@ applicable shadow action methods. For dials, a brightness or cover-position
 attribute change can confirm the effect even when the entity remains `on` or
 `open`. These become absolute light brightness / cover position actions; they
 are still subject to the same safety layer and default dry-run behaviour.
+For a newly discovered, unmapped button, timing alone is insufficient: a safe
+effect must occur within eight seconds and its live Home Assistant context ID
+or direct parent ID must match the press context ID. Otherwise the press is
+audited but does not train an action. Some integrations do not propagate such
+a context link, so their presses can be seen without producing confirmed
+effects until an explicit mapping/adapter is provided.
 
 The historic import now reads retained button event attributes and the helper
 values that existed at each press time. It rechecks existing 0.8.0 history
 idempotently so an earlier `automation`/`unknown` row may be upgraded to
 `physical_button` when the causal chain is sufficiently specific. It never
-replays an old press. Unmapped selections, disabled controls, unsupported
+replays an old press. Newly discovered unmapped historical presses are audited,
+but not attributed to actions: Recorder REST history does not carry the live
+context chain required for that match. Unmapped selections, disabled controls, unsupported
 domains, missing Recorder events, or changes that cannot be confidently tied
 to a known destination are audited as presses but do not train an executable
 action. Attribution is a bounded temporal match, not proof of causality; the
@@ -379,7 +396,7 @@ The app writes structured messages to standard output, visible in the Home
 Assistant Log tab. It never logs tokens.
 
 ```text
-STARTUP version=0.9.0 mode=observe-and-suggest events=True ...
+STARTUP version=0.10.0 mode=observe-and-suggest events=True ...
 EVENT_STREAM connected subscription=state_changed
 INVENTORY registry_sync areas=8 devices=74 entities=214 labels=12
 HISTORY_BOOTSTRAP state=complete days=30 actions=42 environmental=1728 experiences=12 already_imported=False

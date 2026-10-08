@@ -10,6 +10,7 @@ explain both what it sees and why a particular entity is (or is not) usable.
 from collections import Counter
 from typing import Any
 
+from .buttons import BUTTON_EVENT_IDS
 from .safety import SafetyPolicy
 
 
@@ -140,6 +141,9 @@ class InventoryBuilder:
             roles.append("environmental_input")
         if is_context:
             roles.append("context_input")
+        if domain == "event" and (entity_id in BUTTON_EVENT_IDS or
+                                  "button" in labels or device_class == "button"):
+            roles.append("physical_button_input")
         if safety["classification"] == "safe_action_target":
             roles.append("safe_action_target")
         elif safety["classification"] == "blocked_action_target":

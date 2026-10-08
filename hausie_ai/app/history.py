@@ -16,7 +16,7 @@ import math
 from typing import Any, Callable
 
 from .buttons import (BUTTON_EVENT_IDS, BUTTON_HELPER_IDS, DESTINATIONS,
-                      attribute_effect, matching_press, resolve_press)
+                      attribute_effect, is_physical_button, matching_press, resolve_press)
 from .experiments import RELEVANT_KINDS
 from .ha import HomeAssistantClient
 from .inventory import normalize_environmental_value
@@ -56,8 +56,11 @@ class HistoryBootstrap:
         self.profiles = {str(item["entity_id"]): item for item in profiles
                          if item.get("is_environmental") or item.get("is_context_input") or
                          item.get("safety", {}).get("classification") == "safe_action_target"}
-        available = {str(item["entity_id"]) for item in profiles}
-        self.button_event_ids = sorted(BUTTON_EVENT_IDS & available)
+        self.all_profiles = {str(item["entity_id"]): item for item in profiles}
+        available = set(self.all_profiles)
+        self.button_event_ids = sorted((BUTTON_EVENT_IDS & available) |
+                                       {entity_id for entity_id, item in self.all_profiles.items()
+                                        if is_physical_button(item)})
         self.button_helper_ids = sorted(BUTTON_HELPER_IDS & available)
         self.zone = zone
         self.days = days
@@ -79,7 +82,7 @@ class HistoryBootstrap:
         cutoff = (cutoff or datetime.now(timezone.utc)).astimezone(timezone.utc)
         start = cutoff - timedelta(days=self.days)
         ids = sorted(self.profiles)
-        signature = sha256(json.dumps(["button-learning-v1", self.button_event_ids, self.button_helper_ids, [
+        signature = sha256(json.dumps(["button-learning-v2", self.button_event_ids, self.button_helper_ids, [
             (entity_id, self.profiles[entity_id].get("area_id"),
              self.profiles[entity_id].get("environmental_kind"),
              self.profiles[entity_id].get("device_class")) for entity_id in ids
@@ -213,7 +216,8 @@ class HistoryBootstrap:
                 if at < start:
                     continue
                 press = resolve_press(entity_id, str(attributes.get("event_type") or ""), attributes,
-                                      helper_states, at, self._context(at, "", ""))
+                                      helper_states, at, self._context(at, "", ""),
+                                      self.all_profiles.get(entity_id))
                 if press and (entity_id, press["pressed_at"]) not in self._seen_presses:
                     self._seen_presses.add((entity_id, press["pressed_at"]))
                     records.append({"button_press": press})

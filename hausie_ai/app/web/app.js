@@ -48,10 +48,11 @@ function entityTable(items) {
 }
 
 const sensorDomains = new Set(["sensor", "binary_sensor", "weather", "person", "device_tracker"]);
-const validViews = new Set(["devices", "sensors", "automations", "targets", "other", "all"]);
+const validViews = new Set(["devices", "sensors", "buttons", "automations", "targets", "other", "all"]);
 const explanations = {
   devices: "Grouped by Home Assistant device. Open a device to see all its entities and their current values.",
   sensors: "Environmental readings, presence and other sensor entities. Only classified inputs contribute to the model's context.",
+  buttons: "Physical event entities found through the button label, button device class, or existing TEST_HAUSIE mapping. Presses are audited; unmapped effects need a Home Assistant context link before training.",
   automations: "Home Assistant automation entities. Their state is visible, but existing automations are not automatically used as training examples.",
   targets: "Potential control targets. The safety column explains what Hausie AI is allowed to suggest or why it is blocked.",
   other: "Entities that are not in the sensor, automation or action-target categories.",
@@ -75,13 +76,15 @@ function inventoryGroups(entities) {
   }
   const isTarget = item => (item.roles || []).some(role => role === "safe_action_target" || role === "blocked_action_target");
   const isSensor = item => sensorDomains.has(item.domain);
+  const isButton = item => (item.roles || []).includes("physical_button_input");
   const isAutomation = item => item.domain === "automation";
   return {
     devices: Array.from(devices.values()).sort((a, b) => a.name.localeCompare(b.name)),
     sensors: entities.filter(isSensor),
+    buttons: entities.filter(isButton),
     automations: entities.filter(isAutomation),
     targets: entities.filter(isTarget),
-    other: entities.filter(item => !isSensor(item) && !isAutomation(item) && !isTarget(item)),
+    other: entities.filter(item => !isSensor(item) && !isButton(item) && !isAutomation(item) && !isTarget(item)),
     all: entities
   };
 }
@@ -158,7 +161,7 @@ function renderInventory() {
     results.innerHTML = `<div class="empty">${filtering ? "No matching items in this category." : "No items in this category yet."}</div>`;
   } else if (currentView === "devices") {
     results.innerHTML = `<div class="device-list">${visible.map(device => {
-      const input = device.entities.some(entity => (entity.roles || []).some(role => role === "environmental_input" || role === "context_input"));
+      const input = device.entities.some(entity => (entity.roles || []).some(role => role === "environmental_input" || role === "context_input" || role === "physical_button_input"));
       const action = device.entities.some(entity => (entity.roles || []).includes("safe_action_target"));
       const role = input && action ? "Input + action" : input ? "Input" : action ? "Action target" : "Observed only";
       return `<details class="device"><summary><span><strong>${escapeHtml(device.name)}</strong><small>${escapeHtml(device.area)} · ${device.entities.length} entities · ${escapeHtml(role)}</small></span></summary>${entityTable(device.entities)}</details>`;
@@ -226,6 +229,7 @@ async function loadPage() {
     document.getElementById("inventory-summary").innerHTML = [
       metric(inventoryData.summary.entities, "Entities"),
       metric(inventoryData.summary.environmental_inputs, "Environmental inputs"),
+      metric(inventoryGroups(inventoryData.entities || []).buttons.length, "Physical buttons"),
       metric(inventoryData.summary.safe_action_targets, "Safe action targets"),
       metric(inventoryData.summary.blocked_action_targets, "Blocked targets")
     ].join("");
@@ -237,7 +241,7 @@ async function loadPage() {
     const actions = await getJson("api/v1/history/actions?limit=100");
     document.getElementById("history-actions").innerHTML = actions.map(item => `<tr><td>${escapeHtml(item.changed_at)}</td><td>${escapeHtml(item.entity_id)}</td><td>${escapeHtml(item.old_state)} to ${escapeHtml(item.new_state)}</td><td>${escapeHtml(item.source)}</td><td>${escapeHtml(`${item.action.domain}.${item.action.service}`)}</td></tr>`).join("") || '<tr><td colspan="5">No imported action changes yet.</td></tr>';
     const presses = await getJson("api/v1/buttons/presses?limit=100");
-    document.getElementById("button-presses").innerHTML = presses.map(item => `<tr><td>${escapeHtml(item.pressed_at)}</td><td>${escapeHtml(item.event_entity_id)} / ${escapeHtml(item.gesture)}</td><td>${escapeHtml(item.helper_entity_id)} / ${escapeHtml(item.selection || "None")}</td><td>${escapeHtml(item.operation)}</td><td>${escapeHtml(item.confirmed_actions)}</td><td>${escapeHtml(item.origin)}</td></tr>`).join("") || '<tr><td colspan="6">No physical button presses recorded yet.</td></tr>';
+    document.getElementById("button-presses").innerHTML = presses.map(item => `<tr><td>${escapeHtml(item.pressed_at)}</td><td>${escapeHtml(item.event_entity_id)} / ${escapeHtml(item.gesture)}</td><td>${item.helper_entity_id ? `${escapeHtml(item.helper_entity_id)} / ${escapeHtml(item.selection || "None")}` : "Unmapped"}</td><td>${escapeHtml(item.operation)}</td><td>${escapeHtml(item.confirmed_actions)}</td><td>${escapeHtml(item.origin)}</td></tr>`).join("") || '<tr><td colspan="6">No physical button presses recorded yet.</td></tr>';
   } else if (pageName === "decisions") {
     const decisions = await getJson("api/v1/decisions?limit=100");
     document.getElementById("decisions-table").innerHTML = decisions.map(item => `<tr><td>${escapeHtml(item.created_at)}</td><td>${escapeHtml(item.decision)} (${escapeHtml(Number(item.confidence).toFixed(2))})</td><td>${escapeHtml(item.action ? `${item.action.domain}.${item.action.service} ${item.action.entity_id}` : "—")}</td><td>${escapeHtml(item.reason)}</td><td>${item.rated ? "Rated" : item.decision === "SUGGEST_ACTION" ? `<button type="button" class="feedback-button" data-decision="${Number(item.id)}" data-reward="1">Helpful</button> <button type="button" class="feedback-button" data-decision="${Number(item.id)}" data-reward="-1">Not helpful</button>` : "—"}</td></tr>`).join("") || '<tr><td colspan="5">No decisions recorded yet.</td></tr>';

@@ -28,7 +28,8 @@ const entities = [
   {entity_id: "sensor.office_temperature", name: "Office temperature", domain: "sensor", area_name: "Office", state: "22.5", device_class: "temperature", device_id: "device-1", device_name: "Climate sensor", roles: ["environmental_input"], labels: ["climate"], safety: {classification: "observed_only"}},
   {entity_id: "automation.office_lights", name: "Office lights", domain: "automation", area_name: "Office", state: "on", device_class: null, device_id: null, roles: ["observed_only"], labels: [], safety: {classification: "observed_only"}},
   {entity_id: "light.hallway", name: "Hallway light", domain: "light", area_name: "Hallway", state: "off", device_class: null, device_id: "device-2", device_name: "Hallway bulb", roles: ["safe_action_target"], labels: ["lighting"], safety: {classification: "safe_action_target"}},
-  {entity_id: "climate.office", name: "Office AC", domain: "climate", area_name: "Office", state: "cool", device_class: null, device_id: "device-1", device_name: "Climate sensor", roles: ["blocked_action_target"], labels: ["climate"], safety: {classification: "blocked_action_target"}}
+  {entity_id: "climate.office", name: "Office AC", domain: "climate", area_name: "Office", state: "cool", device_class: null, device_id: "device-1", device_name: "Climate sensor", roles: ["blocked_action_target"], labels: ["climate"], safety: {classification: "blocked_action_target"}},
+  {entity_id: "event.hallway_button", name: "Hallway button", domain: "event", area_name: "Hallway", state: "2026-10-08T12:00:00Z", device_class: "button", device_id: "device-3", device_name: "Remote", roles: ["physical_button_input"], labels: ["button"], safety: {classification: "observed_only"}}
 ];
 vm.runInContext("inventoryData = {entities: fixture};", Object.assign(sandbox, {fixture: entities}));
 const filtered = () => vm.runInContext("filteredEntities().map(item => item.entity_id)", sandbox);
@@ -53,10 +54,11 @@ test("state and safety filters work with categories", () => {
   assert.deepEqual(Array.from(filtered()), ["light.hallway"]);
   clear();
   const groups = vm.runInContext("inventoryGroups(inventoryData.entities)", sandbox);
-  assert.equal(groups.devices.length, 2);
+  assert.equal(groups.devices.length, 3);
   assert.equal(groups.automations.length, 1);
   assert.equal(groups.sensors.length, 1);
   assert.equal(groups.targets.length, 2);
+  assert.equal(groups.buttons.length, 1);
 });
 
 test("inventory renders only the selected category and filtered entities", () => {
@@ -69,5 +71,8 @@ test("inventory renders only the selected category and filtered entities", () =>
   vm.runInContext("currentView = 'devices'; renderInventory();", sandbox);
   assert.match(element("inventory-results").innerHTML, /Climate sensor/);
   assert.match(element("inventory-results").innerHTML, /Hallway bulb/);
+  vm.runInContext("currentView = 'buttons'; renderInventory();", sandbox);
+  assert.match(element("inventory-results").innerHTML, /event\.hallway_button/);
+  assert.doesNotMatch(element("inventory-results").innerHTML, /light\.hallway/);
   assert.equal(vm.runInContext("escapeHtml('<img>')", sandbox), "&lt;img&gt;");
 });

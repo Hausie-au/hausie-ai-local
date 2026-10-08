@@ -57,7 +57,7 @@ def test_ingress_panel_uses_supervisor_base_path(tmp_path: Path):
         assert response.status_code == 200
         assert '<base href="/api/hassio_ingress/example-token/">' in response.text
         assert 'href="ui/inventory"' in response.text
-        assert 'src="ui/assets/app.js?v=0.9.0"' in response.text
+        assert 'src="ui/assets/app.js?v=0.10.0"' in response.text
         assert 'id="history-import-status"' in response.text
         assert client.get("/api/v1/status").json()["history_import"]["days"] == 30
         assert client.get("/api/v1/status").json()["physical_buttons"]["presses"] == 0

@@ -60,6 +60,86 @@ def test_rotary_press_rejects_opposite_device_direction():
                           {"entity_id": LIGHT, "state": "on", "attributes": {"brightness": 50}}) is None
 
 
+def test_generic_button_needs_event_entity_and_gesture():
+    at = datetime(2026, 10, 8, 12, tzinfo=timezone.utc)
+    profile = {"domain": "event", "labels": ["button"], "device_class": None}
+    press = resolve_press("event.new_remote_action", "single_press", {}, {}, at, {},
+                          profile, {"id": "press-context"})
+    assert press["gesture"] == "single_press"
+    assert press["target_entities"] == ()
+    assert press["context_id"] == "press-context"
+    assert resolve_press("event.new_remote_action", "", {}, {}, at, {}, profile) is None
+    assert resolve_press("button.virtual", "press", {}, {}, at, {},
+                         {**profile, "domain": "button"}) is None
+
+
+def test_generic_button_matches_only_linked_safe_effect():
+    at = datetime(2026, 10, 8, 12, tzinfo=timezone.utc)
+    press = resolve_press("event.new_remote_action", "single_press", {}, {}, at, {},
+                          {"domain": "event", "labels": ["button"]}, {"id": "press-context"})
+    action = {"domain": "light", "service": "turn_on", "entity_id": LIGHT, "service_data": {}}
+    old = {"entity_id": LIGHT, "state": "off"}
+    new = {"entity_id": LIGHT, "state": "on"}
+    assert matching_press([press], at + timedelta(seconds=1), action, old, new) is None
+    assert matching_press([press], at + timedelta(seconds=1), action, old, new,
+                          {"parent_id": "unrelated-context"}) is None
+    assert matching_press([press], at + timedelta(seconds=1), action, old, new,
+                          {"parent_id": "press-context"}) is press
+    assert matching_press([press], at + timedelta(seconds=2), action, old, new,
+                          {"parent_id": "press-context"}) is None
+
+
+def test_labeled_device_button_is_discovered_and_trains_only_linked_effect(tmp_path):
+    service = HausieAIService(replace(Settings.from_environment().with_data_dir(tmp_path),
+                                      history_import_days=0))
+    at = datetime.now(timezone.utc)
+    remote = "event.fresh_remote_action"
+    registry = {"labels": [{"label_id": "button-label", "name": "button"}],
+                "devices": [{"id": "remote-device", "labels": ["button-label"]}],
+                "entities": [{"entity_id": remote, "device_id": "remote-device"}]}
+    initial = [state(remote, (at - timedelta(days=1)).isoformat(), at),
+               state(LIGHT, "off", at), state("light.other", "off", at)]
+    service.collect_states(initial, registry)
+    assert "physical_button_input" in service.inventory_by_entity[remote]["roles"]
+    pressed = at + timedelta(seconds=1)
+    service.handle_state_changed({"data": {"old_state": initial[0],
+                                          "new_state": {**state(remote, pressed.isoformat(), pressed,
+                                                                {"event_type": "single_press"}),
+                                                        "context": {"id": "remote-press"}}}})
+    assert service.store.button_counts() == {"presses": 1, "confirmed_actions": 0}
+    unrelated = pressed + timedelta(seconds=2)
+    service.handle_state_changed({"data": {"old_state": initial[2],
+                                          "new_state": state("light.other", "on", unrelated)}})
+    assert service.store.stats()["observations"] == 0
+    effected = pressed + timedelta(seconds=3)
+    service.handle_state_changed({"data": {"old_state": initial[1],
+                                          "new_state": {**state(LIGHT, "on", effected),
+                                                        "context": {"id": "effect", "parent_id": "remote-press"}}}})
+    assert service.store.button_counts() == {"presses": 1, "confirmed_actions": 1}
+    assert service.store.recent()[0]["source"] == "physical_button"
+    assert service.store.recent_button_presses()[0]["selection"] == ""
+
+
+def test_generic_button_history_is_audited_without_invented_causality(tmp_path):
+    store = Store(tmp_path)
+    LabStore(store)
+    safety = SafetyPolicy()
+    cutoff = datetime(2026, 10, 8, 12, tzinfo=timezone.utc)
+    baseline = cutoff - timedelta(days=2)
+    pressed = cutoff - timedelta(hours=1)
+    remote = "event.fresh_remote_action"
+    rows = [sample(baseline, LIGHT, "off"), sample(pressed + timedelta(seconds=2), LIGHT, "on"),
+            state(remote, pressed.isoformat(), pressed, {"event_type": "single_press"})]
+    registry = {"labels": [{"label_id": "button-label", "name": "button"}],
+                "entities": [{"entity_id": remote, "labels": ["button-label"]}]}
+    profiles = InventoryBuilder(safety).build([rows[0], rows[2]], registry)
+    result = HistoryBootstrap(FakeHA(rows, []), store, safety, profiles, timezone.utc, 1).run(cutoff)
+    assert result["button_presses"] == 1
+    assert result["button_effects"] == 0
+    assert result["actions"] == 0
+    assert store.recent_button_presses()[0]["event_entity_id"] == remote
+
+
 def test_live_button_effect_trains_once_without_naming_a_user(tmp_path):
     settings = replace(Settings.from_environment().with_data_dir(tmp_path),
                        history_import_days=0, learn_from_unknown=False)

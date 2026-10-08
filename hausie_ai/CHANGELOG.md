@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.10.0
+
+- Discover physical `event.*` controls through the Home Assistant `button`
+  label on an entity or its device, or through the event's `button` device class.
+  Existing TEST_HAUSIE mappings remain supported without requiring a label.
+- Show discovered controls in a dedicated inventory tab and audit both live and
+  retained Recorder presses without assigning a named user.
+- Let an unmapped button effect train only when a safe device change occurs
+  within eight seconds **and** Home Assistant directly links its context to
+  the press. Mere timing/area coincidence is never enough. Historical
+  unmapped presses remain audit-only because Recorder state history does not
+  supply a reliable context chain.
+- Keep virtual `button.*` entities out of physical-button detection. No change
+  to the default `auto_act=false`, `dry_run=true` safety posture.
+
 ## 0.9.0
 
 - Observe TEST_HAUSIE Cube, Ali, IKEA dual-button and BILRESA wheel event

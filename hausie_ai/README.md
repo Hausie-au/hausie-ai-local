@@ -17,9 +17,9 @@ Open the app **Log** tab to see the state event, source classification,
 learning observation and decision flow. The full installation, safety and
 privacy documentation is in the repository root `README.md`.
 
-Version 0.9.0 imports retained Home Assistant history before live learning.
+Version 0.10.0 imports retained Home Assistant history before live learning.
 State changes attributable to a user in Logbook and safe effects confirmed
-after known TEST_HAUSIE physical-button events train actions; unrelated
+after a known TEST_HAUSIE or context-linked labeled physical-button event train actions; unrelated
 automations do not. Sensors also seed local environmental history. Overview
 shows progress, and live decisions wait until import finishes. No historical
 action is executed. The Activity page audits physical gestures separately,

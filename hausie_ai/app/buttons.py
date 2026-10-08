@@ -1,4 +1,4 @@
-"""Explicit TEST_HAUSIE physical-button contract.
+"""Physical-button events and conservative action attribution.
 
 The input_select entities configure a gesture; they are not evidence that a
 gesture happened. Only an event entity transition creates a press. A press is
@@ -16,6 +16,14 @@ ALI_EVENT = "event.0xa4c1381c42aaf764_action"
 IKEA_EVENTS = {f"event.bilresa_dual_button_button_{number}" for number in (1, 2)}
 WHEEL_EVENTS = {f"event.bilresa_scroll_wheel_button_{number}" for number in range(1, 10)}
 BUTTON_EVENT_IDS = {CUBE_EVENT, ALI_EVENT} | IKEA_EVENTS | WHEEL_EVENTS
+
+
+def is_physical_button(profile: dict[str, Any] | None) -> bool:
+    """Only event entities represent physical presses; button.* is virtual in HA."""
+    if not isinstance(profile, dict) or profile.get("domain") != "event":
+        return False
+    return ("button" in (profile.get("labels") or []) or
+            profile.get("device_class") == "button")
 
 CUBE_HELPERS = {
     "flip90": "flip_90_action", "flip180": "flip_180_action",
@@ -92,10 +100,18 @@ def _value(states: dict[str, Any], entity_id: str) -> str:
 
 
 def resolve_press(entity_id: str, event_type: str, attributes: dict[str, Any],
-                  states: dict[str, Any], at: datetime, context: dict[str, Any]) -> dict[str, Any] | None:
+                  states: dict[str, Any], at: datetime, context: dict[str, Any],
+                  profile: dict[str, Any] | None = None,
+                  event_context: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """Resolve a physical event against the *then-current* helper states."""
     if entity_id not in BUTTON_EVENT_IDS:
-        return None
+        if not is_physical_button(profile) or not event_type.strip():
+            return None
+        return {"event_entity_id": entity_id, "pressed_at": at.isoformat(),
+                "gesture": event_type.strip().lower(), "helper_entity_id": "",
+                "selection": "", "operation": "trigger", "target_entities": (),
+                "context": context, "context_id": str((event_context or {}).get("id") or ""),
+                "matched_entities": set()}
     gesture = event_type.strip().lower()
     helper = ""
     operation = "trigger"
@@ -183,13 +199,20 @@ def _effect_direction(old_state: dict[str, Any], new_state: dict[str, Any]) -> s
 
 def matching_press(presses: list[dict[str, Any]], at: datetime,
                    action: dict[str, Any], old_state: dict[str, Any],
-                   new_state: dict[str, Any]) -> dict[str, Any] | None:
-    """Only a known target changing soon after its own button may be credited."""
+                   new_state: dict[str, Any],
+                   action_context: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    """Credit a mapped target, or an unmapped one with a direct HA context link."""
     target = str(action.get("entity_id") or "")
+    action_context = action_context or {}
     for press in reversed(presses):
         delay = at - datetime.fromisoformat(press["pressed_at"])
+        context_id = press.get("context_id")
+        linked = bool(context_id and context_id in {
+            action_context.get("id"), action_context.get("parent_id")})
+        mapped = target in press["target_entities"]
         if (timedelta(0) <= delay <= timedelta(seconds=8) and
-                target in press["target_entities"] and target not in press["matched_entities"] and
+                (mapped or (not press["target_entities"] and linked)) and
+                target not in press["matched_entities"] and
                 (press["operation"] == "trigger" or
                  press["operation"] == _effect_direction(old_state, new_state))):
             press["matched_entities"].add(target)
@@ -202,7 +225,8 @@ def attribute_effect(old_state: dict[str, Any] | None,
     """Convert a confirmed button-caused brightness/position change to a safe action.
 
     This does not by itself attribute the change to a button. The caller must
-    still match a recent physical press and an explicit destination.
+    still match a recent physical press and either an explicit destination or
+    a direct Home Assistant context link.
     """
     if not isinstance(old_state, dict) or not isinstance(new_state, dict):
         return None

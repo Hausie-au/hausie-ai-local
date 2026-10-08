@@ -10,7 +10,7 @@ from time import monotonic
 from typing import Any
 
 from .cloud import CloudClient
-from .buttons import BUTTON_EVENT_IDS, attribute_effect, matching_press, resolve_press
+from .buttons import BUTTON_EVENT_IDS, attribute_effect, is_physical_button, matching_press, resolve_press
 from .events import HomeAssistantEventStream
 from .experiments import RELEVANT_KINDS, ShadowLearners
 from .ha import HomeAssistantClient
@@ -22,7 +22,7 @@ from .safety import SafetyPolicy
 from .settings import Settings
 from .storage import Store
 
-ADDON_VERSION = "0.9.0"
+ADDON_VERSION = "0.10.0"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -336,10 +336,15 @@ class HausieAIService:
             press for press in self._recent_button_presses
             if 0 <= (changed_at - datetime.fromisoformat(press["pressed_at"])).total_seconds() <= 8
         ]
-        if entity_id in BUTTON_EVENT_IDS and old_value != new_value:
+        profile_before = self.inventory_by_entity.get(entity_id)
+        if not profile_before and entity_id.startswith("event."):
+            profile_before = self.inventory_builder.build([new_state], self.registry_snapshot)[0]
+        if (entity_id in BUTTON_EVENT_IDS or is_physical_button(profile_before)) and old_value != new_value:
             attributes = new_state.get("attributes") or {}
             gesture = str(attributes.get("event_type") or "")
-            press = resolve_press(entity_id, gesture, attributes, self.state_index, changed_at, context_before)
+            press = resolve_press(entity_id, gesture, attributes, self.state_index, changed_at,
+                                  context_before, profile_before,
+                                  new_state.get("context") or event.get("context"))
             if press:
                 press_id, is_new = self.store.record_button_press(press)
                 if is_new:
@@ -351,7 +356,8 @@ class HausieAIService:
         candidate = action or button_only_action
         if candidate and source in {"automation", "unknown"} and self.safety.evaluate(candidate).allowed:
             press = matching_press(self._recent_button_presses, changed_at, candidate,
-                                   old_state or {}, new_state)
+                                   old_state or {}, new_state,
+                                   new_state.get("context") or event.get("context"))
             if press and self.store.record_button_effect(press["id"], changed_at.isoformat(), candidate):
                 action = candidate
                 source = "physical_button"
