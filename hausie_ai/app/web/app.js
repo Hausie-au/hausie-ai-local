@@ -198,6 +198,20 @@ async function loadPage() {
   updateStatus(status);
   if (pageName === "overview") {
     const inventory = await getJson("api/v1/inventory");
+    const imported = status.history_import || {};
+    const historyStatus = document.getElementById("history-import-status");
+    if (imported.state === "complete") {
+      historyStatus.textContent = `${imported.already_imported ? "Already loaded" : "Loaded"}: ${imported.seen_actions ?? 0} action changes found, ${imported.actions ?? 0} attributed user actions used for training, and ${imported.environmental ?? 0} environmental/occupancy changes. Lookback: ${imported.days} days, subject to Home Assistant Recorder retention.`;
+    } else if (imported.state === "running") {
+      historyStatus.textContent = `Loading day ${Number(imported.processed_days || 0) + 1} of ${imported.days}; ${imported.actions || 0} user actions imported so far. Suggestions and automation are paused until this finishes.`;
+    } else if (imported.state === "failed") {
+      historyStatus.textContent = `History import failed: ${imported.error || "unknown error"}. Live learning continues; the import will retry after the next add-on start.`;
+    } else if (imported.state === "disabled") {
+      historyStatus.textContent = "History import is disabled. Set history_import_days above zero to enable it.";
+    } else {
+      historyStatus.textContent = "Waiting for the first Home Assistant inventory snapshot before importing history.";
+    }
+    if (imported.buffer_overflow) historyStatus.textContent += " Warning: the live-event buffer overflowed during import; some events may be missing.";
     document.getElementById("summary").innerHTML = [
       metric(inventory.summary.entities, "Entities visible"),
       metric(inventory.summary.environmental_inputs, "Environmental inputs"),
@@ -220,6 +234,8 @@ async function loadPage() {
   } else if (pageName === "activity") {
     const events = await getJson("api/v1/environment/events?limit=100");
     document.getElementById("events").innerHTML = events.map(item => `<tr><td>${escapeHtml(item.created_at)}</td><td>${escapeHtml(item.entity_id)}</td><td>${escapeHtml(item.area_name || "Unassigned")}</td><td>${escapeHtml(item.old_state)} → ${escapeHtml(item.new_state)}</td><td>${escapeHtml(item.normalized_value || "")}</td></tr>`).join("") || '<tr><td colspan="5">No environmental or occupancy changes recorded yet.</td></tr>';
+    const actions = await getJson("api/v1/history/actions?limit=100");
+    document.getElementById("history-actions").innerHTML = actions.map(item => `<tr><td>${escapeHtml(item.changed_at)}</td><td>${escapeHtml(item.entity_id)}</td><td>${escapeHtml(item.old_state)} to ${escapeHtml(item.new_state)}</td><td>${escapeHtml(item.source)}</td><td>${escapeHtml(`${item.action.domain}.${item.action.service}`)}</td></tr>`).join("") || '<tr><td colspan="5">No imported action changes yet.</td></tr>';
   } else if (pageName === "decisions") {
     const decisions = await getJson("api/v1/decisions?limit=100");
     document.getElementById("decisions-table").innerHTML = decisions.map(item => `<tr><td>${escapeHtml(item.created_at)}</td><td>${escapeHtml(item.decision)} (${escapeHtml(Number(item.confidence).toFixed(2))})</td><td>${escapeHtml(item.action ? `${item.action.domain}.${item.action.service} ${item.action.entity_id}` : "—")}</td><td>${escapeHtml(item.reason)}</td><td>${item.rated ? "Rated" : item.decision === "SUGGEST_ACTION" ? `<button type="button" class="feedback-button" data-decision="${Number(item.id)}" data-reward="1">Helpful</button> <button type="button" class="feedback-button" data-decision="${Number(item.id)}" data-reward="-1">Not helpful</button>` : "—"}</td></tr>`).join("") || '<tr><td colspan="5">No decisions recorded yet.</td></tr>';

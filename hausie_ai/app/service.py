@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
@@ -20,7 +21,7 @@ from .safety import SafetyPolicy
 from .settings import Settings
 from .storage import Store
 
-ADDON_VERSION = "0.7.0"
+ADDON_VERSION = "0.8.0"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -126,9 +127,16 @@ class HausieAIService:
         self._executed_actions: dict[str, ExecutedAction] = {}
         self._recent_triggers: list[RecentTrigger] = []
         self._trigger_baselines: dict[str, str] = {}
+        self._history_lock = threading.Lock()
+        self._history_ready = True  # start() gates only the running service, not direct unit-test calls
+        self._history_buffer: list[dict[str, Any]] = []
+        self._history_buffer_overflow = False
+        self.history_status: dict[str, Any] = {"state": "disabled" if self._history_ready else "waiting_for_inventory",
+                                                    "days": settings.history_import_days}
 
     async def start(self) -> None:
         self._stop.clear()
+        self._history_ready = self.settings.history_import_days == 0
         LOGGER.info(
             "STARTUP version=%s mode=%s events=%s poll_interval=%ss decision_interval=%ss",
             ADDON_VERSION,
@@ -180,6 +188,8 @@ class HausieAIService:
                         self.last_inventory_error = str(exc)
                         LOGGER.warning("INVENTORY registry_sync_failed error=%s", exc)
                 result = await asyncio.to_thread(self.collect_states, states, registry)
+                if not self._history_ready and self.settings.history_import_days:
+                    await asyncio.to_thread(self._bootstrap_history)
                 if self.settings.cloud_url and self.settings.device_id:
                     await asyncio.to_thread(self._send_cloud_heartbeat, result["stats"])
                 self._maybe_scheduled_decision()
@@ -197,6 +207,57 @@ class HausieAIService:
             raise
         except Exception as exc:
             LOGGER.warning("EVENT_STREAM stopped error=%s", exc)
+
+    def _bootstrap_history(self) -> None:
+        from .history import HistoryBootstrap, parse_time
+
+        cutoff = datetime.now(timezone.utc)
+        def report_progress(progress: dict[str, Any]) -> None:
+            self.history_status = progress
+            if progress.get("state") == "running":
+                LOGGER.info("HISTORY_BOOTSTRAP progress=%s/%s actions=%s action_changes=%s environmental=%s",
+                            progress.get("processed_days"), progress.get("days"),
+                            progress.get("actions"), progress.get("seen_actions"),
+                            progress.get("environmental"))
+
+        try:
+            importer = HistoryBootstrap(self.ha, self.store, self.safety,
+                                        self.inventory_profiles, self.home_zone,
+                                        self.settings.history_import_days,
+                                        report_progress)
+            result = importer.run(cutoff)
+            # Close the interval that elapsed during the (possibly long)
+            # initial import, including any delay before WebSocket subscribe.
+            final_cutoff = datetime.now(timezone.utc)
+            if final_cutoff > cutoff:
+                result = importer.run(final_cutoff)
+                cutoff = final_cutoff
+            LOGGER.info("HISTORY_BOOTSTRAP state=complete days=%s actions=%s environmental=%s experiences=%s already_imported=%s",
+                        result["days"], result["actions"], result["environmental"],
+                        result.get("experiences", 0), result["already_imported"])
+        except Exception as exc:
+            self.history_status = {"state": "failed", "days": self.settings.history_import_days,
+                                   "error": str(exc)}
+            LOGGER.warning("HISTORY_BOOTSTRAP state=failed error=%s; continuing with live learning", exc)
+        if self._history_buffer_overflow:
+            self.history_status = dict(self.history_status, buffer_overflow=True)
+            LOGGER.warning("HISTORY_BOOTSTRAP live_buffer_overflow=true; some during-import live events were dropped")
+        # The stream was subscribed during import. Drain its buffered events in
+        # arrival order, then atomically allow callbacks to use the live path.
+        while True:
+            with self._history_lock:
+                if not self._history_buffer:
+                    self._history_ready = True
+                    break
+                buffered = self._history_buffer
+                self._history_buffer = []
+            for event in buffered:
+                state = (event.get("data") or {}).get("new_state") or {}
+                at = parse_time(state.get("last_changed"))
+                if (at and at <= cutoff and self.store.history_record_exists(
+                        str(state.get("entity_id") or ""), at.isoformat(), str(state.get("state") or ""))):
+                    continue
+                self._handle_live_state_changed(event)
 
     def collect_states(
         self,
@@ -234,6 +295,16 @@ class HausieAIService:
         return {"states": len(states), "stats": self.store.stats(), "inventory": inventory_summary}
 
     def handle_state_changed(self, event: dict[str, Any]) -> None:
+        with self._history_lock:
+            if not self._history_ready:
+                self._history_buffer.append(event)
+                if len(self._history_buffer) > 20_000:
+                    self._history_buffer.pop(0)
+                    self._history_buffer_overflow = True
+                return
+        self._handle_live_state_changed(event)
+
+    def _handle_live_state_changed(self, event: dict[str, Any]) -> None:
         data = event.get("data") or {}
         old_state = data.get("old_state")
         new_state = data.get("new_state")
@@ -309,7 +380,7 @@ class HausieAIService:
                 LOGGER.info("LAB opportunity_id=%s timing=%s next_event=%s", opportunity_id,
                             timing_predictions, routine_predictions)
 
-        if self._is_context_trigger(profile):
+        if self._history_ready and self._is_context_trigger(profile):
             context_after = self.current_context()
             result = self.decide(context_after, execute=self.settings.auto_act)
             self._log_decision("context-event", result)
@@ -394,6 +465,8 @@ class HausieAIService:
         return bool(profile.get("is_context_input"))
 
     def _maybe_scheduled_decision(self) -> None:
+        if not self._history_ready:
+            return
         now = monotonic()
         if now - self._last_decision_attempt < self.settings.decision_interval_seconds or not self.last_states:
             return
@@ -472,6 +545,11 @@ class HausieAIService:
         return observation_id
 
     def decide(self, context: dict[str, Any], execute: bool = False) -> dict[str, Any]:
+        if not self._history_ready:
+            reason = "Initial Home Assistant history import is in progress."
+            decision_id = self.store.add_decision(context, None, 0.0, "DO_NOTHING", reason, False)
+            return {"decision_id": decision_id, "decision": "DO_NOTHING", "action": None,
+                    "confidence": 0.0, "reason": reason, "executed": False}
         candidate, reason = self.learner.recommend(context)
         if candidate is None:
             decision_id = self.store.add_decision(context, None, 0.0, "DO_NOTHING", reason, False)
@@ -553,6 +631,7 @@ class HausieAIService:
             "last_event_source": self.last_event_source,
             "inventory_registry_available": bool(self.registry_snapshot),
             "home_time_zone": self.home_zone_name,
+            "history_import": self.history_status,
             "last_inventory_error": self.last_inventory_error,
             "current_context": self.current_context() if self.last_states else None,
             "settings": {
@@ -562,6 +641,7 @@ class HausieAIService:
                 "min_observations": self.settings.min_observations,
                 "min_confidence": self.settings.min_confidence,
                 "learn_from_unknown": self.settings.learn_from_unknown,
+                "history_import_days": self.settings.history_import_days,
                 "log_level": self.settings.log_level,
             },
             "stats": self.store.stats(),

@@ -7,7 +7,8 @@ from hausie_ai.app.settings import Settings
 from hausie_ai.app.service import HausieAIService
 
 
-def test_observe_and_decide_api(tmp_path: Path):
+def test_observe_and_decide_api(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("HAUSIE_AI_HISTORY_IMPORT_DAYS", "0")
     settings = Settings.from_environment().with_data_dir(tmp_path)
     main.service = HausieAIService(settings)
     with TestClient(main.app) as client:
@@ -45,6 +46,7 @@ def test_inventory_and_environment_endpoints(tmp_path: Path):
         assert inventory.json()["summary"]["environmental_inputs"] == 1
         assert client.get("/api/v1/context").json()["context"]["environment"]
         assert client.get("/api/v1/environment/events").status_code == 200
+        assert client.get("/api/v1/history/actions").status_code == 200
 
 
 def test_ingress_panel_uses_supervisor_base_path(tmp_path: Path):
@@ -54,7 +56,9 @@ def test_ingress_panel_uses_supervisor_base_path(tmp_path: Path):
         assert response.status_code == 200
         assert '<base href="/api/hassio_ingress/example-token/">' in response.text
         assert 'href="ui/inventory"' in response.text
-        assert 'src="ui/assets/app.js?v=0.7.0"' in response.text
+        assert 'src="ui/assets/app.js?v=0.8.0"' in response.text
+        assert 'id="history-import-status"' in response.text
+        assert client.get("/api/v1/status").json()["history_import"]["days"] == 30
         assert client.get("/ui/").status_code == 200
         assert client.get("/ui//").status_code == 200
         assert client.get("http://testserver//ui").status_code == 200

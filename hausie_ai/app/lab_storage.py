@@ -23,7 +23,7 @@ class LabStore:
                     previous_action_json TEXT,
                     context_json TEXT NOT NULL
                 );
-                CREATE INDEX IF NOT EXISTS idx_lab_manual_area ON lab_manual_actions(area, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_lab_manual_area_time ON lab_manual_actions(area, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_environmental_events_entity ON environmental_events(entity_id, id DESC);
                 CREATE TABLE IF NOT EXISTS lab_sensor_forecasts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -53,6 +53,16 @@ class LabStore:
                     PRIMARY KEY (entity_id, unit, created_at)
                 );
                 CREATE INDEX IF NOT EXISTS idx_lab_vectors_history ON lab_sensor_vectors(entity_id, unit, created_at DESC);
+                CREATE TABLE IF NOT EXISTS lab_historical_values (
+                    entity_id TEXT NOT NULL,
+                    unit TEXT NOT NULL,
+                    changed_at TEXT NOT NULL,
+                    local_hour INTEGER NOT NULL,
+                    value REAL NOT NULL,
+                    PRIMARY KEY (entity_id, unit, changed_at)
+                );
+                CREATE INDEX IF NOT EXISTS idx_lab_historical_values_hour
+                    ON lab_historical_values(entity_id, unit, local_hour, changed_at DESC);
                 CREATE TABLE IF NOT EXISTS lab_outcome_predictions (
                     outcome_id INTEGER NOT NULL,
                     entity_id TEXT NOT NULL,
@@ -93,6 +103,16 @@ class LabStore:
                     kind TEXT NOT NULL,
                     seconds REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS lab_historical_timing (
+                    entity_id TEXT NOT NULL,
+                    changed_at TEXT NOT NULL,
+                    area TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    seconds REAL NOT NULL,
+                    PRIMARY KEY (entity_id, changed_at)
+                );
+                CREATE INDEX IF NOT EXISTS idx_lab_historical_timing_area
+                    ON lab_historical_timing(area, kind, changed_at DESC);
                 CREATE TABLE IF NOT EXISTS lab_timing_predictions (
                     opportunity_id INTEGER NOT NULL,
                     method TEXT NOT NULL,
@@ -111,7 +131,7 @@ class LabStore:
                     current_signal TEXT NOT NULL,
                     next_signal TEXT NOT NULL
                 );
-                CREATE INDEX IF NOT EXISTS idx_lab_transitions_area ON lab_event_transitions(area, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_lab_transitions_area_time ON lab_event_transitions(area, created_at DESC);
                 CREATE TABLE IF NOT EXISTS lab_routine_predictions (
                     opportunity_id INTEGER NOT NULL,
                     method TEXT NOT NULL,
@@ -132,17 +152,27 @@ class LabStore:
     def manual_actions(self, area: str, limit: int = 2000) -> list[dict[str, Any]]:
         with self.store._connect() as connection:
             rows = connection.execute(
-                "SELECT created_at, action_json, previous_action_json, context_json FROM lab_manual_actions WHERE area = ? ORDER BY id DESC LIMIT ?",
+                "SELECT created_at, action_json, previous_action_json, context_json FROM lab_manual_actions WHERE area = ? ORDER BY created_at DESC, id DESC LIMIT ?",
                 (area, max(1, min(5000, limit))),
             ).fetchall()
-        return [{"created_at": row["created_at"], "action": json.loads(row["action_json"]),
-                 "previous_action": json.loads(row["previous_action_json"]) if row["previous_action_json"] else None,
-                 "context": json.loads(row["context_json"])} for row in rows]
+        # Derive previous actions by event time. Backfilled rows are inserted
+        # after existing live rows, so database IDs are not chronological.
+        chronological = list(reversed(rows))
+        result = []
+        previous = None
+        for row in chronological:
+            prior_action = (json.loads(previous["action_json"]) if previous and
+                            datetime.fromisoformat(row["created_at"]) - datetime.fromisoformat(previous["created_at"]) <= timedelta(hours=2)
+                            else None)
+            result.append({"created_at": row["created_at"], "action": json.loads(row["action_json"]),
+                           "previous_action": prior_action, "context": json.loads(row["context_json"])})
+            previous = row
+        return list(reversed(result))
 
     def add_manual_action(self, area: str, action: dict[str, Any], context: dict[str, Any]) -> int:
         with self.store._lock, self.store._connect() as connection:
             previous = connection.execute(
-                "SELECT created_at, action_json FROM lab_manual_actions WHERE area = ? ORDER BY id DESC LIMIT 1", (area,)
+                "SELECT created_at, action_json FROM lab_manual_actions WHERE area = ? ORDER BY created_at DESC, id DESC LIMIT 1", (area,)
             ).fetchone()
             previous_json = None
             if previous and datetime.now(timezone.utc) - datetime.fromisoformat(previous["created_at"]) <= timedelta(hours=2):
@@ -170,7 +200,7 @@ class LabStore:
     def previous_sensor_events(self, entity_id: str, limit: int = 20) -> list[dict[str, Any]]:
         with self.store._connect() as connection:
             rows = connection.execute(
-                "SELECT created_at, old_state, new_state FROM environmental_events WHERE entity_id = ? ORDER BY id DESC LIMIT ?",
+                "SELECT created_at, old_state, new_state FROM environmental_events WHERE entity_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
                 (entity_id, max(1, min(100, limit))),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -178,11 +208,17 @@ class LabStore:
     def completed_forecast_values(self, entity_id: str, unit: str, target_hour: int, limit: int = 60) -> list[float]:
         with self.store._connect() as connection:
             rows = connection.execute(
-                """SELECT DISTINCT created_at, actual_value FROM lab_sensor_forecasts
-                   WHERE entity_id = ? AND unit = ? AND target_hour = ? AND actual_value IS NOT NULL
-                   ORDER BY created_at DESC LIMIT ?""", (entity_id, unit, target_hour, limit)
+                """SELECT at, value FROM (
+                     SELECT DISTINCT created_at AS at, actual_value AS value
+                     FROM lab_sensor_forecasts WHERE entity_id = ? AND unit = ?
+                       AND target_hour = ? AND actual_value IS NOT NULL
+                     UNION
+                     SELECT changed_at AS at, value FROM lab_historical_values
+                     WHERE entity_id = ? AND unit = ? AND local_hour = ?
+                   ) ORDER BY at DESC LIMIT ?""",
+                (entity_id, unit, target_hour, entity_id, unit, target_hour, limit)
             ).fetchall()
-        return [float(row["actual_value"]) for row in rows]
+        return [float(row["value"]) for row in rows]
 
     def sensor_values(self, entity_id: str, limit: int = 50) -> list[float]:
         result = []
@@ -407,14 +443,20 @@ class LabStore:
 
     def timing_examples(self, area: str, kind: str | None = None, limit: int = 500) -> list[float]:
         with self.store._connect() as connection:
+            query = """SELECT seconds FROM (
+                    SELECT e.seconds, e.area, e.kind, o.created_at AS at
+                    FROM lab_timing_episodes e JOIN shadow_opportunities o ON o.id = e.opportunity_id
+                    UNION ALL
+                    SELECT seconds, area, kind, changed_at AS at FROM lab_historical_timing
+                ) WHERE area = ?"""
             if kind is None:
                 rows = connection.execute(
-                    "SELECT seconds FROM lab_timing_episodes WHERE area = ? ORDER BY opportunity_id DESC LIMIT ?",
+                    query + " ORDER BY at DESC LIMIT ?",
                     (area, limit),
                 ).fetchall()
             else:
                 rows = connection.execute(
-                    "SELECT seconds FROM lab_timing_episodes WHERE area = ? AND kind = ? ORDER BY opportunity_id DESC LIMIT ?",
+                    query + " AND kind = ? ORDER BY at DESC LIMIT ?",
                     (area, kind, limit),
                 ).fetchall()
         return [float(row["seconds"]) for row in rows]
@@ -494,7 +536,7 @@ class LabStore:
         with self.store._connect() as connection:
             rows = connection.execute(
                 """SELECT previous_signal, current_signal, next_signal FROM lab_event_transitions
-                   WHERE area = ? ORDER BY id DESC LIMIT ?""", (area, limit)
+                   WHERE area = ? ORDER BY created_at DESC, id DESC LIMIT ?""", (area, limit)
             ).fetchall()
         return [dict(row) for row in rows]
 

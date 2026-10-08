@@ -43,6 +43,7 @@ class Settings:
     min_confidence: float
     learn_from_unknown: bool
     event_stream_enabled: bool
+    history_import_days: int
     decision_interval_seconds: int
     action_cooldown_seconds: int
     reversal_window_seconds: int
@@ -64,6 +65,7 @@ class Settings:
             min_confidence=min(1.0, max(0.0, _env_float("HAUSIE_AI_MIN_CONFIDENCE", 0.8))),
             learn_from_unknown=_env_bool("HAUSIE_AI_LEARN_FROM_UNKNOWN", False),
             event_stream_enabled=_env_bool("HAUSIE_AI_EVENT_STREAM_ENABLED", True),
+            history_import_days=max(0, min(365, _env_int("HAUSIE_AI_HISTORY_IMPORT_DAYS", 30))),
             decision_interval_seconds=max(30, _env_int("HAUSIE_AI_DECISION_INTERVAL_SECONDS", 60)),
             action_cooldown_seconds=max(30, _env_int("HAUSIE_AI_ACTION_COOLDOWN_SECONDS", 900)),
             reversal_window_seconds=max(10, _env_int("HAUSIE_AI_REVERSAL_WINDOW_SECONDS", 120)),
@@ -85,6 +87,7 @@ class Settings:
             min_confidence=self.min_confidence,
             learn_from_unknown=self.learn_from_unknown,
             event_stream_enabled=self.event_stream_enabled,
+            history_import_days=self.history_import_days,
             decision_interval_seconds=self.decision_interval_seconds,
             action_cooldown_seconds=self.action_cooldown_seconds,
             reversal_window_seconds=self.reversal_window_seconds,

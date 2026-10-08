@@ -11,6 +11,10 @@ Hausie AI is the local decision layer above it.
 ## What it does today
 
 - Subscribes to Home Assistant `state_changed` events over the Supervisor API.
+- Before live decisions, backfills retained Home Assistant Recorder history (30
+  days of requested lookback by default) in one-day windows. Logbook provides
+  user attribution, so only verified low-risk user changes become training
+  actions; un-attributed or automated changes do not become preferences.
 - Resynchronises the full Home Assistant state regularly as a safe fallback.
 - Builds a local inventory from Home Assistant's state, area, device, entity
   and label registries. This is the same source data that Hausie uses to build
@@ -47,6 +51,41 @@ Hausie AI is the local decision layer above it.
   raw states, entity IDs, device names or household timelines to the cloud.
 
 ## How the learning loop works
+
+On first startup after installing 0.8.0, Hausie AI first reads its current
+inventory to know which entities are relevant, then imports the available
+historical changes. The live event stream is buffered during this import;
+suggestions and automatic actions wait for completion. The Overview page and
+terminal show progress and counts. On error, live learning resumes and the
+import retries on the next app start. Successful imports are remembered in
+SQLite and repeated restarts do not duplicate training rows. Increasing
+`history_import_days` or changing the inventory causes an idempotent rescan on
+the next app start. Ordinary restarts fetch the interval missed while the app
+was stopped, with a small overlap for Recorder commit delays. A final short
+catch-up covers the time spent doing the initial import itself.
+
+The import uses Home Assistant's `/api/history/period` for state transitions
+and `/api/logbook` for user attribution; it never opens or writes Home
+Assistant's Recorder database directly. The requested lookback cannot recover
+data older than Home Assistant actually retained, including entities excluded
+from Recorder or Logbook. Its first state for an entity is a baseline, not a
+trainable action. Physical button presses or integrations with no attributable
+user ID remain unlabelled rather than being incorrectly treated as deliberate
+user preferences. The Environmental activity page audits all imported
+action-like changes as `user`, `automation` or `unknown`. Historical readings
+seed sensor histories, including same-local-hour numeric baselines; verified actions
+seed the main learner and action shadow models. Where a relevant same-area
+sensor change preceded an action within ten minutes, the historical episode
+also seeds stimulus/action and action-delay methods. It does not fabricate historic feedback,
+causal response labels or retrospective prediction accuracy; those still need
+future observations. No historical action is replayed on a device.
+
+Attribution is a conservative match on entity, state and timestamp within two
+seconds; it is not proof of causality. For larger Recorder databases, set
+`history_import_days` between 0 (disable)
+and 365. The default is 30; the UI reports how many rows were actually
+imported. Imports are bounded to 300,000 state rows per day and pause with a
+visible error if that limit is exceeded rather than exhausting the Pi's RAM.
 
 ```text
 Home Assistant event
@@ -268,6 +307,8 @@ This repository is a standalone custom app repository. In Home Assistant:
    configuration.
 4. Start it and open the **Log** tab. The first startup creates
    `/data/hausie_ai.sqlite3` automatically.
+  Version 0.8.0 also imports retained Home Assistant history before live
+  decisions; watch **Initial Home Assistant history import** on Overview.
 5. Open **Hausie AI** from the sidebar or use **Open Web UI** on its app page.
    The panel uses Home Assistant Ingress and has no separate network port to
    open. The Overview links to separate Inventory, Environmental activity and
@@ -296,6 +337,7 @@ The default configuration is safe for a real home:
 
 ```yaml
 event_stream_enabled: true
+history_import_days: 30
 auto_act: false
 dry_run: true
 learn_from_unknown: false
@@ -310,9 +352,10 @@ The app writes structured messages to standard output, visible in the Home
 Assistant Log tab. It never logs tokens.
 
 ```text
-STARTUP version=0.3.0 mode=observe-and-suggest events=True ...
+STARTUP version=0.8.0 mode=observe-and-suggest events=True ...
 EVENT_STREAM connected subscription=state_changed
 INVENTORY registry_sync areas=8 devices=74 entities=214 labels=12
+HISTORY_BOOTSTRAP state=complete days=30 actions=42 environmental=1728 experiences=12 already_imported=False
 SNAPSHOT entities=214 observations=0 environmental=18 context_inputs=7 safe_targets=21
 ENVIRONMENT event_id=4 entity=sensor.living_room_temperature kind=temperature area=Living Room state=23.8->24.2 band=comfortable used_in_context=True
 EVENT source=user entity=light.living_room state=off->on

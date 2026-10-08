@@ -22,6 +22,7 @@ mapping = {
     'min_confidence': 'HAUSIE_AI_MIN_CONFIDENCE',
     'learn_from_unknown': 'HAUSIE_AI_LEARN_FROM_UNKNOWN',
     'event_stream_enabled': 'HAUSIE_AI_EVENT_STREAM_ENABLED',
+    'history_import_days': 'HAUSIE_AI_HISTORY_IMPORT_DAYS',
     'decision_interval_seconds': 'HAUSIE_AI_DECISION_INTERVAL_SECONDS',
     'action_cooldown_seconds': 'HAUSIE_AI_ACTION_COOLDOWN_SECONDS',
     'reversal_window_seconds': 'HAUSIE_AI_REVERSAL_WINDOW_SECONDS',

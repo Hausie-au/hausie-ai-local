@@ -26,6 +26,10 @@
     <main id="overview" hidden>
       <div class="intro"><h2>Overview</h2><p>A quick look at what Hausie AI observes and learns locally.</p></div>
       <div id="summary" class="metrics"></div>
+      <section class="panel"><h3>Initial Home Assistant history import</h3>
+        <p class="muted">Before online learning, Hausie AI reads retained Recorder state changes and uses Logbook attribution to identify user actions. Unattributed changes are not treated as your preferences.</p>
+        <p id="history-import-status" aria-live="polite">Waiting to check Home Assistant history.</p>
+      </section>
       <p><a class="feature-link" href="ui/learning">Compare learning methods →</a></p>
       <div class="card-grid">
         <a class="feature" href="ui/inventory"><span class="feature-icon">◎</span><h3>What Hausie AI can see</h3><p>Browse devices, sensors, automations and action targets.</p><span class="feature-link">Open inventory →</span></a>
@@ -67,6 +71,9 @@
     <main id="activity" hidden>
       <div class="intro"><h2>Environmental activity</h2><p>Recent sensor and occupancy changes stored on this Home Assistant installation.</p></div>
       <div class="table-wrap"><table><thead><tr><th>When</th><th>Entity</th><th>Area</th><th>Change</th><th>Context band</th></tr></thead><tbody id="events"></tbody></table></div>
+      <section class="panel"><h3>Imported action history</h3><p class="muted">Action-like state changes from Recorder. Only rows attributed to a user in Logbook train action preferences; unknown and automation rows are shown for audit only.</p>
+        <div class="table-wrap"><table><thead><tr><th>When</th><th>Entity</th><th>Change</th><th>Attribution</th><th>Interpreted action</th></tr></thead><tbody id="history-actions"></tbody></table></div>
+      </section>
     </main>
 
     <main id="decisions" hidden>

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from datetime import datetime
 
 import requests
 import websocket
@@ -27,6 +28,37 @@ class HomeAssistantClient:
         if not isinstance(name, str) or not name:
             raise ValueError("Home Assistant did not provide a valid time_zone.")
         return name
+
+    def get_history(self, start: datetime, end: datetime, entity_ids: list[str]) -> list[list[dict[str, Any]]]:
+        """Fetch a bounded Recorder window; keep entity IDs on every row."""
+        if not entity_ids:
+            return []
+        response = self.session.get(
+            f"{self.base_url}/api/history/period/{start.isoformat()}",
+            params={"end_time": end.isoformat(), "filter_entity_id": ",".join(entity_ids),
+                    "no_attributes": "", "significant_changes_only": "1"},
+            timeout=60,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise ValueError("Home Assistant history response was not a list.")
+        return payload
+
+    def get_logbook(self, start: datetime, end: datetime, entity_ids: list[str]) -> list[dict[str, Any]]:
+        """Logbook exposes user attribution absent from the history REST rows."""
+        if not entity_ids:
+            return []
+        response = self.session.get(
+            f"{self.base_url}/api/logbook/{start.isoformat()}",
+            params={"end_time": end.isoformat(), "entity": ",".join(entity_ids)},
+            timeout=60,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise ValueError("Home Assistant logbook response was not a list.")
+        return payload
 
     def call_service(self, action: dict[str, Any]) -> list[dict[str, Any]]:
         domain = action["domain"]

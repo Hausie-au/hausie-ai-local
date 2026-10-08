@@ -77,6 +77,12 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS idx_environmental_events_created_at
                     ON environmental_events(created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_environmental_events_entity_time
+                    ON environmental_events(entity_id, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_observations_created_at
+                    ON observations(created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_observations_action_time
+                    ON observations(action_json, created_at DESC);
                 CREATE TABLE IF NOT EXISTS learning_experiences (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at TEXT NOT NULL,
@@ -117,8 +123,217 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS idx_action_outcomes_pending
                     ON action_outcomes(completed_at, created_at);
+                CREATE TABLE IF NOT EXISTS history_import_records (
+                    entity_id TEXT NOT NULL,
+                    changed_at TEXT NOT NULL,
+                    new_state TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    PRIMARY KEY (entity_id, changed_at, new_state, kind)
+                );
+                CREATE TABLE IF NOT EXISTS historical_action_events (
+                    entity_id TEXT NOT NULL,
+                    changed_at TEXT NOT NULL,
+                    old_state TEXT NOT NULL,
+                    new_state TEXT NOT NULL,
+                    action_json TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    PRIMARY KEY (entity_id, changed_at, new_state)
+                );
+                CREATE INDEX IF NOT EXISTS idx_historical_actions_time
+                    ON historical_action_events(changed_at DESC);
+                CREATE TABLE IF NOT EXISTS history_bootstrap (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    coverage_start TEXT NOT NULL,
+                    coverage_end TEXT NOT NULL,
+                    entity_signature TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    imported_actions INTEGER NOT NULL,
+                    imported_environmental INTEGER NOT NULL
+                );
                 """
             )
+
+    def history_bootstrap_state(self) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM history_bootstrap WHERE id = 1").fetchone()
+        return dict(row) if row else None
+
+    def history_record_exists(self, entity_id: str, changed_at: str, new_state: str) -> bool:
+        with self._connect() as connection:
+            return connection.execute(
+                """SELECT 1 FROM history_import_records h
+                   WHERE h.entity_id = ? AND h.changed_at = ? AND h.new_state = ?
+                     AND (h.kind = 'environmental' OR EXISTS (
+                         SELECT 1 FROM historical_action_events a
+                         WHERE a.entity_id = h.entity_id AND a.changed_at = h.changed_at
+                           AND a.new_state = h.new_state AND a.source = 'user'))""",
+                (entity_id, changed_at, new_state),
+            ).fetchone() is not None
+
+    def recent_historical_actions(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT changed_at, entity_id, old_state, new_state, action_json, source
+                   FROM historical_action_events ORDER BY changed_at DESC LIMIT ?""",
+                (max(1, min(250, limit)),),
+            ).fetchall()
+        return [dict(row) | {"action": json.loads(row["action_json"])} for row in rows]
+
+    def historical_action_count(self) -> int:
+        with self._connect() as connection:
+            return int(connection.execute("SELECT COUNT(*) FROM historical_action_events").fetchone()[0])
+
+    def mark_history_bootstrap(self, coverage_start: str, coverage_end: str, entity_signature: str,
+                               actions: int, environmental: int) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """INSERT INTO history_bootstrap(id, coverage_start, coverage_end, entity_signature, completed_at,
+                   imported_actions, imported_environmental) VALUES (1, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET coverage_start=excluded.coverage_start,
+                   coverage_end=excluded.coverage_end, entity_signature=excluded.entity_signature,
+                   completed_at=excluded.completed_at,
+                   imported_actions=history_bootstrap.imported_actions + excluded.imported_actions,
+                   imported_environmental=history_bootstrap.imported_environmental + excluded.imported_environmental""",
+                (coverage_start, coverage_end, entity_signature, utc_now(), actions, environmental),
+            )
+
+    def import_history_batch(self, records: list[dict[str, Any]]) -> dict[str, int]:
+        """Atomically seed trusted observations, events and shadow training rows.
+
+        A unique Recorder identity makes a failed/restarted import idempotent.
+        Older locally observed events are also checked by timestamp to avoid
+        counting the same user action twice on an add-on upgrade.
+        """
+        counts = {"actions": 0, "seen_actions": 0, "environmental": 0, "experiences": 0, "transitions": 0, "timings": 0}
+        with self._lock, self._connect() as connection:
+            for record in records:
+                at = record["changed_at"]
+                entity_id = record["entity_id"]
+                state = record["new_state"]
+                if not (record.get("environmental") or record.get("observed_action") or record.get("transition")):
+                    continue
+                kind = "action" if record.get("observed_action") else "environmental"
+                cursor = connection.execute(
+                    "INSERT OR IGNORE INTO history_import_records(entity_id, changed_at, new_state, kind) VALUES (?, ?, ?, ?)",
+                    (entity_id, at, state, kind),
+                )
+                already_seen = not bool(cursor.rowcount)
+                if already_seen:
+                    # A just-recorded Logbook entry may arrive after Recorder.
+                    # Promote only unknown -> verified user on the overlap scan.
+                    if not record.get("action") or kind != "action":
+                        continue
+                    prior_source = connection.execute(
+                        """SELECT source FROM historical_action_events
+                           WHERE entity_id = ? AND changed_at = ? AND new_state = ?""",
+                        (entity_id, at, state),
+                    ).fetchone()
+                    if not prior_source or prior_source["source"] != "unknown":
+                        continue
+                    connection.execute(
+                        """UPDATE historical_action_events SET source = 'user'
+                           WHERE entity_id = ? AND changed_at = ? AND new_state = ?""",
+                        (entity_id, at, state),
+                    )
+                profile = record["profile"]
+                observed_action = record.get("observed_action")
+                if observed_action and not already_seen:
+                    connection.execute(
+                        """INSERT OR IGNORE INTO historical_action_events
+                           (entity_id, changed_at, old_state, new_state, action_json, source)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (entity_id, at, record["old_state"], state,
+                         json.dumps(observed_action, sort_keys=True), record.get("observed_source") or "unknown"),
+                    )
+                    counts["seen_actions"] += 1
+                if record.get("environmental") and not already_seen:
+                    existing = connection.execute(
+                        """SELECT 1 FROM environmental_events WHERE entity_id = ?
+                           AND abs(strftime('%s', created_at) - strftime('%s', ?)) <= 5
+                           AND new_state = ? LIMIT 1""", (entity_id, at, state),
+                    ).fetchone()
+                    if not existing:
+                        connection.execute(
+                            """INSERT INTO environmental_events
+                               (created_at, entity_id, area_name, variable_kind, old_state,
+                                new_state, normalized_value, used_in_context)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (at, entity_id, profile.get("area_name"),
+                             profile.get("environmental_kind") or "context", record["old_state"],
+                             state, record.get("normalized_value"), int(bool(profile.get("is_environmental")))),
+                        )
+                        counts["environmental"] += 1
+                        if "numeric_value" in record:
+                            connection.execute(
+                                """INSERT OR IGNORE INTO lab_historical_values
+                                   (entity_id, unit, changed_at, local_hour, value) VALUES (?, ?, ?, ?, ?)""",
+                                (entity_id, str(profile.get("unit") or ""), at,
+                                 int(record["local_hour"]), float(record["numeric_value"])),
+                            )
+                transition = record.get("transition")
+                if transition and not already_seen:
+                    connection.execute(
+                        """INSERT INTO lab_event_transitions
+                           (created_at, area, previous_signal, current_signal, next_signal)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (at, transition["area"], transition.get("previous_signal"),
+                         transition["current_signal"], transition["next_signal"]),
+                    )
+                    counts["transitions"] += 1
+                action = record.get("action")
+                if not action:
+                    continue
+                action_json = json.dumps(action, sort_keys=True)
+                existing = connection.execute(
+                    """SELECT 1 FROM observations WHERE action_json = ?
+                       AND abs(strftime('%s', created_at) - strftime('%s', ?)) <= 5 LIMIT 1""",
+                    (action_json, at),
+                ).fetchone()
+                if existing:
+                    continue
+                from .learning import context_signature
+                context = record["context"]
+                connection.execute(
+                    "INSERT INTO observations(created_at, context_json, action_json, source) VALUES (?, ?, ?, 'historical_user')",
+                    (at, json.dumps(context_signature(context), sort_keys=True), action_json),
+                )
+                counts["actions"] += 1
+                area = record.get("area")
+                if area:
+                    previous = connection.execute(
+                        """SELECT created_at, action_json FROM lab_manual_actions
+                           WHERE area = ? AND created_at < ? ORDER BY created_at DESC LIMIT 1""",
+                        (area, at),
+                    ).fetchone()
+                    previous_json = (previous["action_json"] if previous and
+                                     datetime.fromisoformat(at) - datetime.fromisoformat(previous["created_at"]) <= timedelta(hours=2)
+                                     else None)
+                    connection.execute(
+                        """INSERT INTO lab_manual_actions
+                           (created_at, area, action_json, previous_action_json, context_json)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (at, area, action_json, previous_json, json.dumps(context, sort_keys=True)),
+                    )
+                trigger = record.get("trigger")
+                if trigger:
+                    connection.execute(
+                        """INSERT INTO learning_experiences
+                           (created_at, context_json, trigger_json, action_json, source)
+                           VALUES (?, ?, ?, ?, 'historical_user')""",
+                        (at, json.dumps(context, sort_keys=True),
+                         json.dumps(trigger, sort_keys=True), action_json),
+                    )
+                    counts["experiences"] += 1
+                    trigger_at = record.get("trigger_at")
+                    if trigger_at:
+                        seconds = (datetime.fromisoformat(at) - datetime.fromisoformat(trigger_at)).total_seconds()
+                        connection.execute(
+                            """INSERT OR IGNORE INTO lab_historical_timing
+                               (entity_id, changed_at, area, kind, seconds) VALUES (?, ?, ?, ?, ?)""",
+                            (entity_id, at, area, str(trigger.get("kind") or ""), seconds),
+                        )
+                        counts["timings"] += 1
+        return counts
 
     def start_action_outcome(self, area: str, action: dict[str, Any], before: dict[str, Any]) -> int:
         with self._lock, self._connect() as connection:
@@ -174,7 +389,7 @@ class Store:
     def experiences(self, limit: int = 2000) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT id, created_at, context_json, trigger_json, action_json, source FROM learning_experiences ORDER BY id DESC LIMIT ?",
+                "SELECT id, created_at, context_json, trigger_json, action_json, source FROM learning_experiences ORDER BY created_at DESC, id DESC LIMIT ?",
                 (max(1, min(10000, limit)),),
             ).fetchall()
         return [{"id": row["id"], "created_at": row["created_at"], "context": json.loads(row["context_json"]),
@@ -269,7 +484,7 @@ class Store:
             rows = connection.execute(
                 """SELECT id, created_at, entity_id, area_name, variable_kind, old_state, new_state,
                           normalized_value, used_in_context
-                   FROM environmental_events ORDER BY id DESC LIMIT ?""",
+                   FROM environmental_events ORDER BY created_at DESC, id DESC LIMIT ?""",
                 (max(1, min(250, limit)),),
             ).fetchall()
         return [dict(row) | {"used_in_context": bool(row["used_in_context"])} for row in rows]
@@ -391,7 +606,7 @@ class Store:
     def recent(self, limit: int = 20) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT id, created_at, context_json, action_json, source, reward FROM observations ORDER BY id DESC LIMIT ?",
+                "SELECT id, created_at, context_json, action_json, source, reward FROM observations ORDER BY created_at DESC, id DESC LIMIT ?",
                 (max(1, min(100, limit)),),
             ).fetchall()
         return [

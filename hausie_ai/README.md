@@ -10,11 +10,17 @@ Start in observation mode:
 auto_act: false
 dry_run: true
 log_level: info
+history_import_days: 30
 ```
 
 Open the app **Log** tab to see the state event, source classification,
 learning observation and decision flow. The full installation, safety and
 privacy documentation is in the repository root `README.md`.
+
+Version 0.8.0 first imports retained Home Assistant history. Only state
+changes attributable to a user in Logbook train actions; sensors also seed
+local environmental history. Overview shows progress, and live decisions
+wait until import finishes. No historical action is executed.
 
 The **Learning methods** page groups 31 local methods into Actions, Sensors,
 Responses, Preferences, Anomalies, Timing and Event sequences. The original exact-context learner is

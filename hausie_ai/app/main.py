@@ -118,6 +118,12 @@ def environment_events(limit: int = 50) -> list[dict[str, Any]]:
     return service.store.recent_environmental_events(limit)
 
 
+@app.get("/api/v1/history/actions")
+def history_actions(limit: int = 50) -> list[dict[str, Any]]:
+    """Read-only audit of action-like Recorder changes and attribution."""
+    return service.store.recent_historical_actions(limit)
+
+
 @app.get("/api/v1/decisions")
 def decisions(limit: int = 30) -> list[dict[str, Any]]:
     return service.store.recent_decisions(limit)

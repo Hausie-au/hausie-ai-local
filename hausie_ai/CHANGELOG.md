@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.8.0
+
+- Import retained Recorder history before online learning, using bounded
+  daily requests and Logbook user attribution. Seed sensor histories,
+  explicit-user actions, same-hour numeric sensor baselines, and same-area
+  stimulus/action and timing episodes without
+  replaying any device commands.
+- Preserve event timestamps, deduplicate imports across upgrades/restarts and
+  keep attribution-unknown or automated changes out of preference training.
+- Audit all eligible action-like changes, including unknown/automated ones,
+  separately from the smaller set of user-attributed training examples.
+- Show import progress, counts and failures in the Overview UI; keep live
+  events buffered and block decisions until the initial import finishes.
+- On later restarts, backfill the interval missed during downtime rather than
+  stopping after the first successful import.
+- Add configurable `history_import_days` (default 30, maximum 365), with a
+  bounded per-day safety limit and safe live-learning fallback on error.
+
 ## 0.7.0
 
 - Expand the shadow lab from 15 to 31 implemented methods across seven tasks:
