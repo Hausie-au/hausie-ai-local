@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.11.0
+
+- Add a full Ingress log viewer with filters for level, category, text and
+  local date/time range, plus paginated results and a compressed download.
+- Persist Python runtime logs in five rotating local files (4 MiB each;
+  approximately 20 MiB total maximum), independent of the learning SQLite
+  database. Serve filtered downloads as a gzip stream without creating a
+  second archive on the Raspberry Pi.
+- Include `DO_NOTHING` decisions at INFO level in the runtime log. Exclude
+  requests to the log viewer itself from the archive to avoid self-matching
+  searches. Logs from older add-on versions cannot be recovered by this UI.
+
 ## 0.10.0
 
 - Discover physical `event.*` controls through the Home Assistant `button`

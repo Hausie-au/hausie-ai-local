@@ -45,6 +45,9 @@ pre{overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:#f2f6f4
 .toolbar label{font-size:13px;font-weight:700}
 .toolbar input{min-width:min(100%,290px);flex:1;max-width:430px;border:1px solid #cdded8;border-radius:10px;padding:10px 12px;font:inherit;background:white;color:#173b3f}
 .toolbar input:focus{outline:2px solid #0c746a;outline-offset:2px}
+.log-control{display:inline-block;border:1px solid #cdded8;border-radius:9px;background:#fff;color:#075f59;padding:9px 12px;font:inherit;font-size:13px;font-weight:700;text-decoration:none;cursor:pointer}
+.log-control:hover{background:#e8f3ef}
+#log-rows td:last-child{min-width:320px;white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px}
 .filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:10px;align-items:end;margin:0 0 19px;padding:14px;border:1px solid #e2ece7;border-radius:13px;background:white}
 .filters label{display:grid;gap:5px;font-size:12px;font-weight:700;color:#496568}
 .filters select,.filters input{width:100%;min-width:0;border:1px solid #cdded8;border-radius:8px;padding:8px 9px;background:#fff;color:#173b3f;font:inherit;font-size:13px;font-weight:400}

@@ -76,3 +76,44 @@ test("inventory renders only the selected category and filtered entities", () =>
   assert.doesNotMatch(element("inventory-results").innerHTML, /light\.hallway/);
   assert.equal(vm.runInContext("escapeHtml('<img>')", sandbox), "&lt;img&gt;");
 });
+
+test("log page filters, escapes messages and builds a matching download link", async () => {
+  const nodes = new Map();
+  const requests = [];
+  const node = id => {
+    if (!nodes.has(id)) nodes.set(id, {
+      value: "", hidden: true, disabled: false, innerHTML: "", href: "",
+      classList: {add() {}, toggle() {}},
+      events: {}, addEventListener(name, callback) { this.events[name] = callback; }
+    });
+    return nodes.get(id);
+  };
+  const context = {
+    document: {body: {dataset: {page: "logs"}}, getElementById: node,
+      querySelector: () => node("nav"), querySelectorAll: () => []},
+    location: {search: "", href: "http://localhost/ui/logs"},
+    URLSearchParams, URL, setInterval() {},
+    fetch: async path => {
+      requests.push(String(path));
+      return {ok: true, json: async () => path === "api/v1/status"
+        ? {home_assistant_connected: true, mode: "observe-and-suggest"}
+        : {entries: [{time: "2026-10-28T00:00:00+00:00", level: "INFO", category: "EVENT",
+            logger: "hausie_ai.test", message: "<script>alert(1)</script>"}],
+          retained_bytes: 1024, max_bytes: 20971520, has_more: false}};
+    }
+  };
+  vm.createContext(context);
+  vm.runInContext(readFileSync(new URL("../app/web/app.js", import.meta.url), "utf8"), context);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(node("log-rows").innerHTML, /&lt;script&gt;/);
+  assert.doesNotMatch(node("log-rows").innerHTML, /<script>/);
+  assert.equal(node("log-next").disabled, true);
+  node("log-level").value = "INFO";
+  node("log-search").value = "light.test";
+  node("log-apply").events.click();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.match(requests.at(-1), /level=INFO/);
+  assert.match(requests.at(-1), /search=light.test/);
+  assert.match(node("log-download").href, /search=light.test/);
+  assert.doesNotMatch(node("log-download").href, /offset=/);
+});

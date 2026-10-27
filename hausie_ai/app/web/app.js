@@ -12,6 +12,8 @@ const label = value => String(value ?? "").replaceAll("_", " ");
 const metric = (value, title) => `<div class="metric"><strong>${escapeHtml(value)}</strong><span>${escapeHtml(title)}</span></div>`;
 const roles = values => (values || []).map(value => `<span class="tag">${escapeHtml(label(value))}</span>`).join("");
 const decimal = value => value == null ? "Pending" : Number(value).toFixed(2);
+const logPageSize = 100;
+let logOffset = 0;
 
 async function getJson(path) {
   const response = await fetch(path, {cache: "no-store"});
@@ -23,6 +25,32 @@ function showError(error) {
   const notice = document.getElementById("error");
   notice.textContent = `Unable to load this page: ${error.message || error}`;
   notice.hidden = false;
+}
+
+function logFilters() {
+  const params = new URLSearchParams();
+  for (const [field, key] of [["log-level", "level"], ["log-category", "category"], ["log-search", "search"]]) {
+    const value = document.getElementById(field).value.trim();
+    if (value) params.set(key, value);
+  }
+  for (const [field, key] of [["log-since", "since"], ["log-until", "until"]]) {
+    const value = document.getElementById(field).value;
+    if (value) params.set(key, new Date(value).toISOString());
+  }
+  return params;
+}
+
+async function loadLogs() {
+  const params = logFilters();
+  document.getElementById("log-download").href = `api/v1/logs/download?${params}`;
+  params.set("limit", String(logPageSize));
+  params.set("offset", String(logOffset));
+  const result = await getJson(`api/v1/logs?${params}`);
+  document.getElementById("log-rows").innerHTML = (result.entries || []).map(item => `<tr><td>${escapeHtml(item.time)}</td><td>${escapeHtml(item.level)}</td><td>${escapeHtml(item.category)}</td><td>${escapeHtml(item.logger)}</td><td>${escapeHtml(item.message)}</td></tr>`).join("") || '<tr><td colspan="5">No retained log lines match these filters.</td></tr>';
+  document.getElementById("log-storage").textContent = `${(result.retained_bytes / 1048576).toFixed(2)} MiB retained of ${(result.max_bytes / 1048576).toFixed(0)} MiB maximum`;
+  document.getElementById("log-page").textContent = `Page ${Math.floor(logOffset / logPageSize) + 1}`;
+  document.getElementById("log-previous").disabled = logOffset === 0;
+  document.getElementById("log-next").disabled = !result.has_more;
 }
 
 function updateStatus(status) {
@@ -245,6 +273,8 @@ async function loadPage() {
   } else if (pageName === "decisions") {
     const decisions = await getJson("api/v1/decisions?limit=100");
     document.getElementById("decisions-table").innerHTML = decisions.map(item => `<tr><td>${escapeHtml(item.created_at)}</td><td>${escapeHtml(item.decision)} (${escapeHtml(Number(item.confidence).toFixed(2))})</td><td>${escapeHtml(item.action ? `${item.action.domain}.${item.action.service} ${item.action.entity_id}` : "—")}</td><td>${escapeHtml(item.reason)}</td><td>${item.rated ? "Rated" : item.decision === "SUGGEST_ACTION" ? `<button type="button" class="feedback-button" data-decision="${Number(item.id)}" data-reward="1">Helpful</button> <button type="button" class="feedback-button" data-decision="${Number(item.id)}" data-reward="-1">Not helpful</button>` : "—"}</td></tr>`).join("") || '<tr><td colspan="5">No decisions recorded yet.</td></tr>';
+  } else if (pageName === "logs") {
+    await loadLogs();
   } else if (pageName === "learning") {
     const lab = await getJson("api/v1/learning/lab");
     const outcomes = await getJson("api/v1/learning/outcomes?limit=30");
@@ -311,6 +341,17 @@ async function loadPage() {
 }
 
 if (pageName === "inventory") prepareInventoryControls();
+if (pageName === "logs") {
+  document.getElementById("log-apply").addEventListener("click", () => { logOffset = 0; loadPage().catch(showError); });
+  document.getElementById("log-reset").addEventListener("click", () => {
+    for (const id of ["log-level", "log-category", "log-search", "log-since", "log-until"]) document.getElementById(id).value = "";
+    logOffset = 0;
+    loadPage().catch(showError);
+  });
+  document.getElementById("log-refresh").addEventListener("click", () => loadPage().catch(showError));
+  document.getElementById("log-previous").addEventListener("click", () => { logOffset = Math.max(0, logOffset - logPageSize); loadPage().catch(showError); });
+  document.getElementById("log-next").addEventListener("click", () => { logOffset += logPageSize; loadPage().catch(showError); });
+}
 if (pageName === "learning") {
   const families = new Set(["actions", "sensors", "responses", "preferences", "anomalies", "timing", "routines"]);
   const selectFamily = family => {
@@ -361,4 +402,4 @@ if (pageName === "decisions") document.getElementById("decisions-table").addEven
   } catch (error) { button.disabled = false; showError(error); }
 });
 loadPage().catch(showError);
-setInterval(() => loadPage().catch(showError), pageName === "learning" ? 60000 : pageName === "inventory" ? 30000 : 15000);
+if (pageName !== "logs") setInterval(() => loadPage().catch(showError), pageName === "learning" ? 60000 : pageName === "inventory" ? 30000 : 15000);

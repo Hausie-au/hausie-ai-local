@@ -22,7 +22,7 @@ from .safety import SafetyPolicy
 from .settings import Settings
 from .storage import Store
 
-ADDON_VERSION = "0.10.0"
+ADDON_VERSION = "0.11.0"
 LOGGER = logging.getLogger(__name__)
 
 
@@ -651,9 +651,7 @@ class HausieAIService:
         }
     @staticmethod
     def _log_decision(trigger: str, result: dict[str, Any]) -> None:
-        level = logging.INFO if result["decision"] != "DO_NOTHING" else logging.DEBUG
-        LOGGER.log(
-            level,
+        LOGGER.info(
             "DECISION trigger=%s decision=%s confidence=%.2f action=%s reason=%s",
             trigger,
             result["decision"],

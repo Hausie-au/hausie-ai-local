@@ -16,7 +16,7 @@ The app has three Home Assistant inputs:
   Supervisor proxy.
 
 The Ingress UI has separate Overview, Inventory, Environmental activity,
-Decisions and Learning methods pages. Overview shows backfill progress.
+Decisions, Learning methods and Full log pages. Overview shows backfill progress.
 Environmental activity audits imported action-like changes as user, physical
 button, automation or unknown. It also shows each observed button gesture,
 its then-current helper mapping, and the number of confirmed safe effects.
@@ -30,6 +30,17 @@ to the local app; the UI does not change the learning or action safety rules.
 
 No Home Assistant configuration files are mapped into the container and no
 additional privileged capabilities are requested.
+
+The Full log page shows the add-on's Python runtime logs (not only decision
+records), filtered by level, category, text and local date/time. The logs live
+in `/data/logs/hausie-ai.jsonl` plus four 4 MiB rotating backups (about 20 MiB
+maximum). The oldest lines are replaced as the archive fills. Downloading
+`.jsonl.gz` streams filtered retained lines directly to your computer, without
+a temporary archive or full-memory buffer on the Pi. Logs before version
+0.11.0 and container messages emitted before Python starts remain in the
+Home Assistant add-on Log tab, not this page. The SQLite learning database
+has separate retention/storage characteristics and is not covered by the
+20 MiB log cap. Log exports can contain private activity data.
 
 Keep `auto_act: false` and `dry_run: true` while reviewing the app log. Only
 attributed user actions and safely confirmed TEST_HAUSIE physical-button

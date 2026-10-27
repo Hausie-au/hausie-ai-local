@@ -20,6 +20,7 @@
       <a href="ui/activity" data-nav="activity">Environmental activity</a>
       <a href="ui/decisions" data-nav="decisions">Decisions</a>
       <a href="ui/learning" data-nav="learning">Learning methods</a>
+      <a href="ui/logs" data-nav="logs">Full log</a>
     </nav>
     <p id="error" class="error" role="alert" hidden></p>
 
@@ -84,6 +85,24 @@
       <div class="intro"><h2>Recent decisions</h2><p>Review why Hausie AI suggested an action or chose to do nothing.</p></div>
       <p class="muted small">Only rate suggestions you actually saw. An unrated suggestion is not a rejection.</p>
       <div class="table-wrap"><table><thead><tr><th>When</th><th>Decision</th><th>Action</th><th>Why</th><th>Your feedback</th></tr></thead><tbody id="decisions-table"></tbody></table></div>
+    </main>
+
+    <main id="logs" hidden>
+      <div class="intro"><h2>Full app log</h2><p>Every retained Hausie AI runtime log line at the configured log level, not just decisions.</p></div>
+      <p class="notice">The app retains at most 20 MiB in five rotating files. Older lines are automatically replaced. This archive starts with this add-on version; earlier Supervisor logs and container messages before Python starts are not available here. Downloads can reveal household activity, so keep them private.</p>
+      <div class="filters" aria-label="Filter app logs">
+        <label>Level<select id="log-level"><option value="">Any level</option><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option><option>CRITICAL</option></select></label>
+        <label>Category<input id="log-category" type="text" maxlength="60" placeholder="EVENT, LEARN, SHADOW..."></label>
+        <label>Search text<input id="log-search" type="search" maxlength="200" placeholder="Entity ID or message"></label>
+        <label>From (local time)<input id="log-since" type="datetime-local"></label>
+        <label>Until (local time)<input id="log-until" type="datetime-local"></label>
+        <button id="log-apply" type="button">Apply filters</button>
+        <button id="log-reset" type="button">Clear filters</button>
+      </div>
+      <div class="toolbar"><button id="log-refresh" class="log-control" type="button">Refresh</button><a id="log-download" class="log-control" href="api/v1/logs/download">Download retained logs (.gz)</a><span id="log-storage" class="muted small"></span></div>
+      <div class="table-wrap"><table><thead><tr><th>Time (UTC)</th><th>Level</th><th>Category</th><th>Logger</th><th>Message</th></tr></thead><tbody id="log-rows"></tbody></table></div>
+      <div class="pager"><button id="log-previous" type="button">Newer</button><span id="log-page" aria-live="polite"></span><button id="log-next" type="button">Older</button></div>
+      <p class="muted small">Use <code>log_level: debug</code> in the add-on configuration for DEBUG lines. The download contains only the currently retained lines matching the applied filters; it is streamed without making a second archive on the Pi.</p>
     </main>
 
     <main id="learning" hidden>

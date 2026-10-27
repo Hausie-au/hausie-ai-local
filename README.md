@@ -388,7 +388,22 @@ learn_from_unknown: false
 log_level: info
 ```
 
-Use `log_level: debug` when you also want to see `DO_NOTHING` decisions.
+The **Full log** page now also shows every retained Python runtime log line at
+the configured level. `DO_NOTHING` decisions are logged at INFO; set
+`log_level: debug` for lower-level diagnostics. The page supports severity,
+category, text/entity-ID, and local date/time filters, with 100 rows per page.
+It is separate from the Decisions page, which shows only decision records.
+
+Logs are persisted in `/data/logs/hausie-ai.jsonl` with four rotated backups,
+4 MiB each: roughly 20 MiB maximum. Once full, the oldest lines are replaced.
+The `.jsonl.gz` download streams the currently retained lines matching the
+applied filters to your computer, without creating a second archive on the Pi
+or reading the entire log into RAM. Each JSON line contains UTC time, level,
+category, logger and message. Unzip it to inspect/search in a text editor.
+Treat downloads as private household data. This archive starts with version
+0.11.0; the earlier Supervisor/container startup logs are still available only
+in Home Assistant's add-on Log tab. The 20 MiB cap applies to this log archive,
+not to the separate SQLite learning database.
 
 ## What you will see in the terminal/log
 
@@ -396,7 +411,7 @@ The app writes structured messages to standard output, visible in the Home
 Assistant Log tab. It never logs tokens.
 
 ```text
-STARTUP version=0.10.0 mode=observe-and-suggest events=True ...
+STARTUP version=0.11.0 mode=observe-and-suggest events=True ...
 EVENT_STREAM connected subscription=state_changed
 INVENTORY registry_sync areas=8 devices=74 entities=214 labels=12
 HISTORY_BOOTSTRAP state=complete days=30 actions=42 environmental=1728 experiences=12 already_imported=False
@@ -434,6 +449,11 @@ readings. The anomaly-review endpoint accepts an explicit user judgement.
 Existing observation, decision and feedback endpoints remain available.
 
 The Ingress panel exposes FastAPI documentation at `/docs`. Useful endpoints:
+
+The log viewer uses `GET /api/v1/logs` (paginated; filters: `level`,
+`category`, `search`, `since`, `until`) and `GET /api/v1/logs/download`
+(streamed filtered `.jsonl.gz`). Date filters require a time zone; the UI
+converts local browser time to UTC.
 
 - `GET /api/v1/status` — runtime status and counters.
 - `GET /api/v1/inventory` — all visible entities with areas, labels, roles and

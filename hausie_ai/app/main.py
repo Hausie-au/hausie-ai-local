@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 import logging
 import re
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from .log_archive import LogArchive
 from .service import ADDON_VERSION, HausieAIService
 from .settings import Settings
 from .ui import asset_path, render_page
@@ -44,10 +46,32 @@ service = HausieAIService(settings)
 
 
 def configure_logging() -> None:
-    level = getattr(logging, settings.log_level, logging.INFO)
+    level = getattr(logging, service.settings.log_level, logging.INFO)
+    archive = LogArchive(service.settings.data_dir)
+    for name in ("uvicorn", "uvicorn.access"):
+        logger = logging.getLogger(name)
+        for handler in list(logger.handlers):
+            if getattr(handler, "hausie_archive", False):
+                logger.removeHandler(handler)
+                handler.close()
+    stream = logging.StreamHandler()
+    handlers: list[logging.Handler] = [stream]
+    try:
+        file_handler = archive.handler()
+        file_handler.hausie_archive = True  # type: ignore[attr-defined]
+        handlers.append(file_handler)
+        for name in ("uvicorn", "uvicorn.access"):
+            logger = logging.getLogger(name)
+            logger.addHandler(file_handler)
+            logger.propagate = False
+            logger.setLevel(level)
+    except OSError as exc:
+        stream.handle(logging.LogRecord("hausie_ai", logging.ERROR, __file__, 0,
+                                        "LOG_ARCHIVE unavailable error=%s", (exc,), None))
     logging.basicConfig(
         level=level,
         format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+        handlers=handlers,
         force=True,
     )
     logging.getLogger("websocket").setLevel(logging.WARNING)
@@ -135,6 +159,45 @@ def decisions(limit: int = 30) -> list[dict[str, Any]]:
     return service.store.recent_decisions(limit)
 
 
+def _log_dates(since: datetime | None, until: datetime | None) -> tuple[datetime | None, datetime | None]:
+    if (since and since.tzinfo is None) or (until and until.tzinfo is None):
+        raise HTTPException(status_code=422, detail="Log date filters must include a time zone.")
+    if since and until and since > until:
+        raise HTTPException(status_code=422, detail="The 'since' date must be before 'until'.")
+    return since, until
+
+
+@app.get("/api/v1/logs")
+def logs(limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0),
+         level: str = Query("", pattern="^(|DEBUG|INFO|WARNING|ERROR|CRITICAL)$"),
+         category: str = Query("", max_length=60),
+         search: str = Query("", max_length=200),
+         since: datetime | None = None, until: datetime | None = None) -> dict[str, Any]:
+    """Paginated, read-only log lines retained by this app, newest first."""
+    since, until = _log_dates(since, until)
+    return LogArchive(service.settings.data_dir).query(
+        limit=limit, offset=offset, level=level, category=category,
+        search=search, since=since, until=until)
+
+
+@app.get("/api/v1/logs/download")
+def download_logs(level: str = Query("", pattern="^(|DEBUG|INFO|WARNING|ERROR|CRITICAL)$"),
+                  category: str = Query("", max_length=60),
+                  search: str = Query("", max_length=200),
+                  since: datetime | None = None,
+                  until: datetime | None = None) -> StreamingResponse:
+    """Stream retained JSONL as gzip; no temporary file or full-memory buffer."""
+    since, until = _log_dates(since, until)
+    name = f"hausie-ai-logs-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}.jsonl.gz"
+    return StreamingResponse(
+        LogArchive(service.settings.data_dir).download_gzip(
+            level=level, category=category, search=search, since=since, until=until),
+        media_type="application/gzip",
+        headers={"Content-Disposition": f'attachment; filename="{name}"',
+                 "Cache-Control": "no-store"},
+    )
+
+
 @app.get("/api/v1/learning/comparison")
 def learning_comparison(limit: int = 30) -> dict[str, Any]:
     """Read-only, local shadow predictions. Unlabelled rows are not failures."""
@@ -209,7 +272,7 @@ def ui_asset(name: str) -> FileResponse:
 @app.get("/ui/{page}", response_class=HTMLResponse)
 @app.get("/ui/{page}/", response_class=HTMLResponse)
 def ui_page(page: str, request: Request) -> str:
-    if page not in {"inventory", "activity", "decisions", "learning"}:
+    if page not in {"inventory", "activity", "decisions", "learning", "logs"}:
         raise HTTPException(status_code=404, detail="Page not found.")
     return render_page(page, request)
 
@@ -217,4 +280,5 @@ def ui_page(page: str, request: Request) -> str:
 if __name__ == "__main__":
     import uvicorn
 
+    configure_logging()
     uvicorn.run("hausie_ai.app.main:app", host="0.0.0.0", port=8099)
